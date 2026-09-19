@@ -135,7 +135,6 @@ jobs:
         shell: cmd
         env:
           CMAKE_ARGS: >-
-            -G Ninja
             -D LUISA_COMPUTE_ENABLE_CUDA=OFF
             -D LUISA_COMPUTE_ENABLE_VULKAN=ON
             -D LUISA_COMPUTE_ENABLE_DX=OFF
