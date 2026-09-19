@@ -74,6 +74,8 @@ if (SKBUILD)
         luisa-compute-runtime
         luisa-compute-xir
         luisa-compute-osl
+        luisa-compute-coro
+        luisa-compute-api
     )
     foreach(_lcs_t IN LISTS _LCS_LUISA_RUNTIME_TARGETS)
         if (TARGET ${_lcs_t})

@@ -46,6 +46,8 @@ jobs:
             --exclude libluisa-runtime.so
             --exclude libluisa-xir.so
             --exclude libluisa-osl.so
+            --exclude libluisa-coro.so
+            --exclude libluisa-api.so
             --exclude libluisa-backend-vulkan.so
             --exclude libluisa-validation-layer.so
             --exclude libglslang.so.16
