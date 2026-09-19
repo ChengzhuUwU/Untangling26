@@ -1,0 +1,6 @@
+[submodule "external/instant-mesh-intersection-repair"]
+	path = external/instant-mesh-intersection-repair
+	url = https://github.com/wonjongg/instant-mesh-intersection-repair.git
+[submodule "ext/luisaCompute"]
+	path = ext/luisaCompute
+	url = https://github.com/ChengzhuUwU/LuisaCompute.git

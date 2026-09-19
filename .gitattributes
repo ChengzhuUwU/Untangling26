@@ -1,0 +1,69 @@
+# Line-ending and diff policy for the whole repository.
+# Fixes the mass "LF will be replaced by CRLF" noise caused by
+# core.autocrlf=true without a project-level rule.
+#
+# Default: normalize all text files to LF in the repo (working copy
+# keeps LF too). Windows-only scripts opt into CRLF explicitly.
+
+* text=auto eol=lf
+
+# --- Source code (LF) ---
+*.c      text eol=lf
+*.cc     text eol=lf
+*.cpp    text eol=lf
+*.hpp    text eol=lf
+*.h      text eol=lf
+*.inl    text eol=lf
+*.lua    text eol=lf
+
+# --- Scripting / config (LF) ---
+*.py     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.json   text eol=lf
+*.ipynb  text eol=lf
+*.txt    text eol=lf
+*.md     text eol=lf
+*.svg    text eol=lf
+
+# --- Tooling config (LF) ---
+*.clang-format text eol=lf
+*.clangd      text eol=lf
+*.for_xmake   text eol=lf
+*.backup      text eol=lf
+.gitignore    text eol=lf
+.gitmodules   text eol=lf
+CMakeLists.txt text eol=lf
+LICENSE       text eol=lf
+
+# --- Windows-only scripts (CRLF) ---
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+
+# --- Mesh / sim resources: text, keep LF (matches HEAD) ---
+*.obj    text eol=lf
+*.mtl    text eol=lf
+*.state  text eol=lf
+
+# --- Binary: never convert, never diff as text ---
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.bmp    binary
+*.tga    binary
+*.hdr    binary
+*.exr    binary
+*.pdf    binary
+*.mp4    binary
+*.mov    binary
+*.webm   binary
+*.abc    binary
+*.blend  binary
+*.glb    binary
+*.gltf   binary
+*.zip    binary
+*.gz     binary
+*.tar    binary
+*.7z     binary

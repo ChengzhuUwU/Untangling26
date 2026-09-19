@@ -1,0 +1,35 @@
+{
+    "scene_id": 2,
+    "use_floor": false,
+    "use_gpu": false,
+    "nonlinear_iter_count": 1,
+    "pcg_iter_count": 50,
+    "contact_energy_type": 0,
+    "use_ccd_linesearch": false,
+    "gravity": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "shells": [
+        {
+            "relative_path": "Extreme/self_collision_6.obj",
+            "translation": [
+                0.15,
+                0.2,
+                0.0
+            ],
+            "scale": [
+                0.6,
+                0.6,
+                0.6
+            ],
+            "rotation": [
+                1.732,
+                0.0,
+                0.0
+            ],
+            "shell_type": "Cloth"
+        }
+    ]
+}

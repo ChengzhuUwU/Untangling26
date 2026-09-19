@@ -1,0 +1,53 @@
+{
+    "scene_id": 2,
+    "use_floor": false,
+    "use_gpu": false,
+    "nonlinear_iter_count": 1,
+    "pcg_iter_count": 50,
+    "contact_energy_type": 0,
+    "use_ccd_linesearch": false,
+    "gravity": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "shells": [
+        {
+            "relative_path": "bowl/torus3K.obj",
+            "translation": [
+                0.0,
+                0.3,
+                0.0
+            ],
+            "scale": [
+                0.2,
+                0.2,
+                0.2
+            ],
+            "rotation": [
+                1.57,
+                0.0,
+                0.0
+            ],
+            "material_type": "Rigid"
+        },
+        {
+            "relative_path": "square2K.obj",
+            "translation": [
+                0.2,
+                0.32,
+                0.0
+            ],
+            "scale": [
+                0.4,
+                0.4,
+                0.4
+            ],
+            "fixed_points": [
+                {
+                    "method": "All"
+                }
+            ]
+        }
+    ]
+}

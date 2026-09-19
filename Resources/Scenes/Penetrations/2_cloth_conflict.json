@@ -1,0 +1,25 @@
+{
+    "scene_id": 2,
+    "use_floor": false,
+    "use_gpu": false,
+    "nonlinear_iter_count": 1,
+    "pcg_iter_count": 50,
+    "contact_energy_type": 0,
+    "use_ccd_linesearch": false,
+    "gravity": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "shells": [
+        {
+            "relative_path": "Extreme/conflict.obj",
+            "translation": [
+                0.0,
+                -0.05,
+                0.0
+            ],
+            "scale": 0.5
+        }
+    ]
+}

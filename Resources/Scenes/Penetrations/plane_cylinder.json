@@ -1,0 +1,45 @@
+{
+    "scene_id": 2,
+    "use_floor": false,
+    "use_gpu": false,
+    "nonlinear_iter_count": 1,
+    "pcg_iter_count": 50,
+    "contact_energy_type": 0,
+    "load_state_frame": 178,
+    "use_ccd_linesearch": false,
+    "gravity": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "shells": [
+        {
+            "relative_path": "Cylinder/cylinder7K.obj",
+            "translation": [
+                0.0,
+                0.2,
+                0.0
+            ],
+            "scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "shell_type": "Cloth"
+        },
+        {
+            "relative_path": "square2K.obj",
+            "translation": [
+                0.0,
+                0.3,
+                0.0
+            ],
+            "scale": [
+                0.8,
+                1.0,
+                2.0
+            ],
+            "shell_type": "Cloth"
+        }
+    ]
+}
