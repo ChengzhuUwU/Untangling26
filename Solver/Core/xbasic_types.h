@@ -3,11 +3,10 @@
 #include <tuple>
 #include <cstddef>
 #include <array>
+#include <Eigen/Dense>
 #include <luisa/core/basic_types.h>
 #include <luisa/dsl/struct.h>
 #include "luisa/core/logging.h"
-// #include <Eigen/src/Core/Matrix.h>
-#include <Eigen/Dense>
 // #include <luisa/core/stl/hash_fwd.h>
 // #include <luisa/core/basic_traits.h>
 

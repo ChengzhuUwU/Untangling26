@@ -807,14 +807,14 @@ struct PyNewtonBuilder
 		{
 			const std::string side_key = std::to_string(side);
 			out[py::str("prp_debug_uv_side" + side_key + "_vertex_ids")] = py::array_t<uint32_t>(py::array::ShapeContainer{ 0 });
-			out[py::str("prp_debug_uv_side" + side_key + "_vertex_uv")] = py::array_t<float>({ 0, 2 });
+			out[py::str("prp_debug_uv_side" + side_key + "_vertex_uv")] = py::array_t<float>(py::array::ShapeContainer{ 0, 2 });
 			out[py::str("prp_debug_uv_side" + side_key + "_vertex_has_uv")] = py::array_t<luisa::ubyte>(py::array::ShapeContainer{ 0 });
 			out[py::str("prp_debug_uv_side" + side_key + "_vertex_is_boundary")] = py::array_t<luisa::ubyte>(py::array::ShapeContainer{ 0 });
-			out[py::str("prp_debug_uv_side" + side_key + "_faces")] = py::array_t<uint32_t>({ 0, 3 });
-			out[py::str("prp_debug_uv_side" + side_key + "_segments")] = py::array_t<float>({ 0, 4 });
+			out[py::str("prp_debug_uv_side" + side_key + "_faces")] = py::array_t<uint32_t>(py::array::ShapeContainer{ 0, 3 });
+			out[py::str("prp_debug_uv_side" + side_key + "_segments")] = py::array_t<float>(py::array::ShapeContainer{ 0, 4 });
 		}
-		out["prp_debug_uv_hit_src_uv"] = py::array_t<float>({ 0, 2 });
-		out["prp_debug_uv_hit_dst_uv"] = py::array_t<float>({ 0, 2 });
+		out["prp_debug_uv_hit_src_uv"] = py::array_t<float>(py::array::ShapeContainer{ 0, 2 });
+		out["prp_debug_uv_hit_dst_uv"] = py::array_t<float>(py::array::ShapeContainer{ 0, 2 });
 		out["prp_debug_uv_hit_src_has_uv"] = py::array_t<luisa::ubyte>(py::array::ShapeContainer{ 0 });
 		out["prp_debug_uv_hit_dst_has_uv"] = py::array_t<luisa::ubyte>(py::array::ShapeContainer{ 0 });
 		out["prp_debug_uv_hit_src_key"] = py::array_t<uint32_t>(py::array::ShapeContainer{ 0 });

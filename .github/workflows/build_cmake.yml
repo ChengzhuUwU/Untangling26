@@ -198,7 +198,7 @@ jobs:
         run: .venv/bin/python -c "import lcs_py; print('lcs_py imported successfully')"
 
   windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     strategy:
       fail-fast: false
