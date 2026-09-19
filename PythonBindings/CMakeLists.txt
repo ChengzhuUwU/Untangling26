@@ -91,7 +91,7 @@ if (SKBUILD)
     # Backend modules (loaded via dlopen at runtime). Only the targets that
     # actually exist for the current LUISA_COMPUTE_ENABLE_* settings will be
     # installed.
-    set(_LCS_LUISA_BACKEND_NAMES metal cuda dx vulkan fallback)
+    set(_LCS_LUISA_BACKEND_NAMES metal cuda dx vk vulkan fallback)
     foreach(_lcs_b IN LISTS _LCS_LUISA_BACKEND_NAMES)
         if (TARGET luisa-compute-backend-${_lcs_b})
             install(TARGETS luisa-compute-backend-${_lcs_b}

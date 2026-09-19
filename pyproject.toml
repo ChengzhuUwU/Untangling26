@@ -30,3 +30,6 @@ gui = [
 [tool.scikit-build]
 cmake.version = ">=3.26"
 build-dir = "build/{wheel_tag}"
+
+[tool.cibuildwheel.windows]
+repair-wheel-command = ""

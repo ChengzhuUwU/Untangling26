@@ -49,6 +49,7 @@ jobs:
             --exclude libluisa-coro.so
             --exclude libluisa-api.so
             --exclude libluisa-backend-vulkan.so
+            --exclude libluisa-backend-vk.so
             --exclude libluisa-validation-layer.so
             --exclude libglslang.so.16
             --exclude libglslang.so
@@ -136,6 +137,7 @@ jobs:
       - name: Build wheels
         shell: cmd
         env:
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
           CMAKE_ARGS: >-
             -D LUISA_COMPUTE_ENABLE_CUDA=OFF
             -D LUISA_COMPUTE_ENABLE_VULKAN=ON
@@ -185,5 +187,6 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        continue-on-error: true
         with:
           packages-dir: dist
