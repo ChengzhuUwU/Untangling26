@@ -48,6 +48,13 @@ jobs:
             --exclude libluisa-osl.so
             --exclude libluisa-backend-vulkan.so
             --exclude libluisa-validation-layer.so
+            --exclude libglslang.so.16
+            --exclude libglslang.so
+            --exclude libglslang-default-resource-limits.so.16
+            --exclude libglslang-default-resource-limits.so
+            --exclude libSPIRV.so.16
+            --exclude libSPIRV.so
+            --exclude libSPIRV-Tools-shared.so
           CMAKE_ARGS: >-
             -D LUISA_COMPUTE_ENABLE_CUDA=OFF
             -D LUISA_COMPUTE_ENABLE_VULKAN=ON
@@ -86,6 +93,7 @@ jobs:
         run: |
           export CC=/opt/homebrew/opt/llvm/bin/clang
           export CXX=/opt/homebrew/opt/llvm/bin/clang++
+          export CXXFLAGS="-D_LIBCPP_ENABLE_CXX20_REMOVED_TYPE_TRAITS"
           export CMAKE_ARGS="-D LUISA_COMPUTE_ENABLE_CUDA=OFF -D LUISA_COMPUTE_ENABLE_VULKAN=OFF -D LUISA_COMPUTE_ENABLE_METAL=ON -D LUISA_COMPUTE_ENABLE_DX=OFF -D LUISA_COMPUTE_ENABLE_FALLBACK=OFF"
           python3 -m pip install -U cibuildwheel --break-system-packages
           export MACOSX_DEPLOYMENT_TARGET=${{ matrix.os }}.0
@@ -127,6 +135,7 @@ jobs:
         shell: cmd
         env:
           CMAKE_ARGS: >-
+            -G Ninja
             -D LUISA_COMPUTE_ENABLE_CUDA=OFF
             -D LUISA_COMPUTE_ENABLE_VULKAN=ON
             -D LUISA_COMPUTE_ENABLE_DX=OFF
