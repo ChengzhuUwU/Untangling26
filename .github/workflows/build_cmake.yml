@@ -71,7 +71,6 @@ jobs:
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -D LCS_BUILD_PYBINDINGS=ON \
-            -D LCS_PYTHON_EXECUTABLE=${{ github.workspace }}/.venv/bin/python \
             -S ${{ github.workspace }}
 
       - name: Configure CMake
@@ -172,7 +171,6 @@ jobs:
             -D CMAKE_C_COMPILER_LAUNCHER=ccache \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -D LCS_BUILD_PYBINDINGS=ON \
-            -D LCS_PYTHON_EXECUTABLE=${{ github.workspace }}/.venv/bin/python \
             -S ${{ github.workspace }}
 
       - name: Build
@@ -264,7 +262,6 @@ jobs:
             -D CMAKE_C_COMPILER_LAUNCHER=ccache `
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} `
             -D LCS_BUILD_PYBINDINGS=ON `
-            -D LCS_PYTHON_EXECUTABLE="${{ github.workspace }}\.venv\Scripts\python.exe" `
             -S ${{ github.workspace }}
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache

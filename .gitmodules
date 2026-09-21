@@ -4,3 +4,4 @@
 [submodule "ext/luisaCompute"]
 	path = ext/luisaCompute
 	url = https://github.com/ChengzhuUwU/LuisaCompute.git
+	branch = next
