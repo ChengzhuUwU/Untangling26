@@ -70,53 +70,81 @@ The entire pipeline is history-independent, requires no topological case distinc
 
 ## Quick Start (Pre-built Wheels)
 
-Pre-built Python wheels (on Python 3.13) are available on the [GitHub Releases](https://github.com/ChengzhuUwU/Untangling26/releases/tag/v0.1) page, allowing you to run the simulations and interactive GUI **without needing a C++ compiler or CMake setup**.
+Pre-built Python wheels (built for **Python 3.13**) are available on the [GitHub Releases](https://github.com/ChengzhuUwU/Untangling26/releases/tag/v0.1) page, allowing you to run the simulations and interactive GUI **without needing a C++ compiler or CMake setup**.
 
-#### 1. Fetch the repository (for demo scripts and mesh assets)
+We recommend using **[uv](https://docs.astral.sh/uv/)** as the environment manager: it is extremely fast and can **automatically download and isolate Python 3.13** even if you do not have Python 3.13 installed on your machine.
+
+#### 1. Install `uv` (Recommended)
+
+If you do not have `uv` installed, install it following the [official installation guide](https://docs.astral.sh/uv/getting-started/installation/):
+
+- **Windows (PowerShell)**:
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+- **Linux / macOS**:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- *Alternative Package Managers*: You can also install `uv` via `pip install uv`, `winget install astral-sh.uv`, or `brew install uv`.
+
+#### 2. Fetch the repository (for demo scripts and mesh assets)
 
 ```bash
 git clone https://github.com/ChengzhuUwU/Untangling26.git
 cd Untangling26
 ```
 
-#### 2. Setup Python environment (Python 3.13)
+#### 3. Setup Python 3.13 environment
+
+Using **`uv`** (automatically downloads and sets up Python 3.13):
 
 ```powershell
 # Windows PowerShell
-python -m venv .venv
+uv venv --python 3.13
 .venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install numpy trimesh triangle polyscope
+uv pip install numpy trimesh triangle polyscope
 ```
 
 ```bash
 # Linux / macOS
-python3 -m venv .venv
+uv venv --python 3.13
 source .venv/bin/activate
-pip install --upgrade pip
-pip install numpy trimesh triangle polyscope
+uv pip install numpy trimesh triangle polyscope
 ```
 
-#### 3. Install the pre-built wheel
+<details>
+<summary><b>Alternative: Using Conda</b></summary>
 
-Install the wheel matching your platform directly from GitHub Releases:
+```bash
+conda create -n untangling python=3.13 -y
+conda activate untangling
+pip install numpy trimesh triangle polyscope
+```
+</details>
+
+#### 4. Install the pre-built wheel
+
+Install the wheel matching your platform directly from GitHub Releases into your active Python 3.13 environment:
 
 - **Windows (x86_64)**:
   ```powershell
-  pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-win_amd64.whl
+  uv pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-win_amd64.whl
   ```
 
 - **Linux (x86_64)**:
   ```bash
-  pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-manylinux_2_28_x86_64.whl
+  uv pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-manylinux_2_28_x86_64.whl
   ```
 
 - **macOS (Apple Silicon arm64)**:
   ```bash
-  pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-macosx_15_0_arm64.whl
+  uv pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-macosx_15_0_arm64.whl
   ```
 
-#### 4. Run an interactive demo
+*(Note: If using Conda, replace `uv pip install` with `pip install`.)*
+
+#### 5. Run an interactive demo
 
 Launch the canonical unit demo with the Polyscope interactive GUI:
 
@@ -143,11 +171,9 @@ cd Untangling26
 git submodule update --init --recursive
 
 # 2. Setup Python environment (Python 3.13 recommended)
-# You can use standard venv, uv, or conda:
-python -m venv .venv
+uv venv --python 3.13
 .venv\Scripts\activate
-pip install --upgrade pip
-pip install numpy trimesh triangle polyscope
+uv pip install numpy trimesh triangle polyscope
 
 # 3. Configure (automatically detects active .venv, uv, or conda environment)
 cmake -S . -B build -G Ninja `
@@ -158,7 +184,7 @@ cmake -S . -B build -G Ninja `
 cmake --build build --target lcs_py -j 4
 
 # 5. (Optional) Editable install
-pip install -e . --no-build-isolation -C build-dir=build
+uv pip install -e . --no-build-isolation -C build-dir=build
 ```
 
 #### For Linux & MacOS
@@ -170,11 +196,9 @@ cd Untangling26
 git submodule update --init --recursive
 
 # 2. Setup Python environment (Python 3.13 recommended)
-# You can use standard venv, uv, or conda:
-python3 -m venv .venv
+uv venv --python 3.13
 source .venv/bin/activate
-pip install --upgrade pip
-pip install numpy trimesh triangle polyscope
+uv pip install numpy trimesh triangle polyscope
 
 # 3. Configure (automatically detects active .venv, uv, or conda environment)
 cmake -S . -B build -G Ninja \
@@ -185,7 +209,7 @@ cmake -S . -B build -G Ninja \
 cmake --build build --target lcs_py -j 4
 
 # 5. (Optional) Editable install
-pip install -e . --no-build-isolation -C build-dir=build
+uv pip install -e . --no-build-isolation -C build-dir=build
 ```
 
 #### Configurations
