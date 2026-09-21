@@ -7,9 +7,13 @@ try:
 except ImportError:
     triangle_lib = None
 
+try:
+    import lcs_py as lcs
+except ImportError:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+    sys.path.insert(0, os.path.join(root, 'build', 'bin'))
+    import lcs_py as lcs
 root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(root, 'build', 'bin'))
-import lcs_py as lcs
 
 from shared_args import create_parser, add_backend_args, add_headless_args
 from utils.display_interface import DisplayInterface

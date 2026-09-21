@@ -5,9 +5,13 @@ from utils.intrinsic_filter import add_blend_args, apply_blend_args, configurati
 import os
 import sys
 
+try:
+	import lcs_py as lcs
+except ImportError:
+	root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+	sys.path.insert(0, os.path.join(root, 'build', 'bin'))
+	import lcs_py as lcs
 root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(root, 'build', 'bin'))
-import lcs_py as lcs
 
 from shared_args import (
 	UNTANGLING_METHODS,
@@ -25,6 +29,7 @@ def parse_args():
 	parser.add_argument("--use_subdivision", action="store_true", help="Subdivide the canonical input mesh at runtime")
 	parser.add_argument("--subdiv_levels", type=int, default=3, help="Number of subdivision levels (default: 3)")
 	parser.add_argument("--method", type=str.upper, choices=UNTANGLING_METHODS, default="PRP", help="Untangling method to use (default: PRP)")
+	parser.add_argument("--use_gpu_pcg", type=int, choices=[0, 1], default=1, help="Use GPU for PCG solver (1=GPU, 0=CPU)")
 	parser.add_argument("--use_gpu_untangling", type=int, choices=[0, 1], default=None, help="Evaluate PRP contours with the GPU batched path (default: engine default = GPU; 0 = CPU)")
 	parser.add_argument("--intrinsic_contour_side_candidates", type=int, choices=[0, 1], default=None, help="Intrinsic contour-side candidate attribution (default: engine default = on)")
 	parser.add_argument("--intrinsic_tau", type=float, default=0.25, help="Phi window threshold tau for side ownership (default: 0.25)")
@@ -138,6 +143,8 @@ solver.print_registered_meshes_info()
 config_ref = solver.get_config()
 from utils.untangling_config import init_config
 init_config(config_ref)
+if args.use_gpu_pcg is not None:
+	config_ref.use_gpu = bool(args.use_gpu_pcg)
 configure_untangling_method(config_ref, args.method)
 config_ref.use_gpu_untangling = bool(args.use_gpu_untangling) if args.use_gpu_untangling is not None else config_ref.use_gpu_untangling
 config_ref.PRP_use_intrinsic_contour_side_candidates = bool(
