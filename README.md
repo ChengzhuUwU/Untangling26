@@ -74,9 +74,10 @@ Pre-built Python wheels (built for **Python 3.13**) are available on the [GitHub
 
 We recommend using **[uv](https://docs.astral.sh/uv/)** as the environment manager: it is extremely fast and can **automatically download and isolate Python 3.13** even if you do not have Python 3.13 installed on your machine.
 
-#### 1. Install `uv` (Recommended)
+<details>
+<summary><b>1. Install uv (if not already installed)</b></summary>
 
-If you do not have `uv` installed, install it following the [official installation guide](https://docs.astral.sh/uv/getting-started/installation/):
+Install `uv` following the [official installation guide](https://docs.astral.sh/uv/getting-started/installation/):
 
 - **Windows (PowerShell)**:
   ```powershell
@@ -88,6 +89,8 @@ If you do not have `uv` installed, install it following the [official installati
   ```
 - *Alternative Package Managers*: You can also install `uv` via `pip install uv`, `winget install astral-sh.uv`, or `brew install uv`.
 
+</details>
+
 #### 2. Fetch the repository (for demo scripts and mesh assets)
 
 ```bash
@@ -97,19 +100,13 @@ cd Untangling26
 
 #### 3. Setup Python 3.13 environment
 
-Using **`uv`** (automatically downloads and sets up Python 3.13):
-
-```powershell
-# Windows PowerShell
-uv venv --python 3.13
-.venv\Scripts\activate
-uv pip install numpy trimesh triangle polyscope
-```
+Using **`uv`** (automatically downloads and sets up Python 3.13 without needing manual activation):
 
 ```bash
-# Linux / macOS
+# Create .venv with Python 3.13
 uv venv --python 3.13
-source .venv/bin/activate
+
+# Install dependencies into .venv
 uv pip install numpy trimesh triangle polyscope
 ```
 
@@ -125,10 +122,10 @@ pip install numpy trimesh triangle polyscope
 
 #### 4. Install the pre-built wheel
 
-Install the wheel matching your platform directly from GitHub Releases into your active Python 3.13 environment:
+Install the wheel matching your platform directly from GitHub Releases into `.venv`:
 
 - **Windows (x86_64)**:
-  ```powershell
+  ```bash
   uv pip install https://github.com/ChengzhuUwU/Untangling26/releases/download/v0.1/untangling26-0.1.0-cp313-cp313-win_amd64.whl
   ```
 
@@ -146,48 +143,21 @@ Install the wheel matching your platform directly from GitHub Releases into your
 
 #### 5. Run an interactive demo
 
-Launch the canonical unit demo with the Polyscope interactive GUI:
+Launch the canonical unit demo with the Polyscope interactive GUI directly using `uv run` (no environment activation needed!):
 
 ```bash
 # Interactive Polyscope viewer
-python PythonBindings/tests/demo_unit.py --scene_id 0
+uv run python PythonBindings/tests/demo_unit.py --scene_id 0
 
 # Headless mode for automated benchmarks
-python PythonBindings/tests/demo_unit.py --scene_id 0 --headless --advance_frames 1
+uv run python PythonBindings/tests/demo_unit.py --scene_id 0 --headless --advance_frames 1
 ```
 
 ---
 
 ## Building from Source
 
-If you prefer building the Python module (`lcs_py`) locally from source or wish to develop custom solvers:
-
-#### For Windows
-
-```powershell
-# 1. Fetch the repository
-git clone https://github.com/ChengzhuUwU/Untangling26.git
-cd Untangling26
-git submodule update --init --recursive
-
-# 2. Setup Python environment (Python 3.13 recommended)
-uv venv --python 3.13
-.venv\Scripts\activate
-uv pip install numpy trimesh triangle polyscope
-
-# 3. Configure (automatically detects active .venv, uv, or conda environment)
-cmake -S . -B build -G Ninja `
-  -D CMAKE_BUILD_TYPE=Release `
-  -D LCS_BUILD_PYBINDINGS=ON
-
-# 4. Build Python module
-cmake --build build --target lcs_py -j 4
-
-# 5. (Optional) Editable install
-uv pip install -e . --no-build-isolation -C build-dir=build
-```
-
-#### For Linux & MacOS
+If you prefer building the Python module (`lcs_py`) locally from source or wish to develop custom solvers, you can use the unified cross-platform workflow below:
 
 ```bash
 # 1. Fetch the repository
@@ -195,12 +165,11 @@ git clone https://github.com/ChengzhuUwU/Untangling26.git
 cd Untangling26
 git submodule update --init --recursive
 
-# 2. Setup Python environment (Python 3.13 recommended)
+# 2. Setup Python environment (Python 3.13)
 uv venv --python 3.13
-source .venv/bin/activate
 uv pip install numpy trimesh triangle polyscope
 
-# 3. Configure (automatically detects active .venv, uv, or conda environment)
+# 3. Configure (CMake automatically detects the local .venv)
 cmake -S . -B build -G Ninja \
   -D CMAKE_BUILD_TYPE=Release \
   -D LCS_BUILD_PYBINDINGS=ON
@@ -208,9 +177,11 @@ cmake -S . -B build -G Ninja \
 # 4. Build Python module
 cmake --build build --target lcs_py -j 4
 
-# 5. (Optional) Editable install
+# 5. (Optional) Editable install into .venv
 uv pip install -e . --no-build-isolation -C build-dir=build
 ```
+
+*(On Windows PowerShell, replace trailing `\` line continuations with backticks `` ` `` or run `cmake` on a single line).*
 
 #### Configurations
 
@@ -220,7 +191,7 @@ In Step `# 3. Configure`:
   - `CMake` (>= 3.22) is recommended: install from the [Release Page](https://github.com/Kitware/CMake/releases).
   - `Ninja` is recommended as the build generator: install from the [Release Page](https://github.com/ninja-build/ninja/releases).
   - `Clang/Clang++` (or MSVC / GCC): specify via `-D CMAKE_C_COMPILER=clang -D CMAKE_CXX_COMPILER=clang++`.
-- **Python Environment**: When `-D LCS_BUILD_PYBINDINGS=ON` is enabled, CMake **automatically detects** your active virtual environment (`uv`, `conda`, `venv`, or `.venv` in the repository root) without needing manual paths. You can still explicitly specify an interpreter by passing `-D LCS_PYTHON_EXECUTABLE=/path/to/python`.
+- **Python Environment**: When `-D LCS_BUILD_PYBINDINGS=ON` is enabled, CMake **automatically detects** your active virtual environment (`uv`, `conda`, `venv`, or `.venv` in the repository root) without needing manual paths. If you switch environments, CMake automatically invalidates stale cache. You can still explicitly specify an interpreter by passing `-D LCS_PYTHON_EXECUTABLE=/path/to/python`.
 - **GPU Computing Backends**: LuisaCompute will automatically configure available backends. To explicitly specify a backend:
   - **Vulkan** (**Cross-platform**, Windows, Linux, and macOS): `-D LUISA_COMPUTE_ENABLE_VULKAN=ON`
   - **CUDA** (NVIDIA GPUs on Windows and Linux): `-D LUISA_COMPUTE_ENABLE_CUDA=ON`
@@ -233,11 +204,12 @@ The compiled module is placed in `build/bin`. Benchmark scripts add this path to
 
 Run all commands from the repository root after building `lcs_py` (or installing the pre-built wheel).
 
-Ensure your virtual environment is activated:
-- **Windows PowerShell**: `.venv\Scripts\activate` (or `conda activate <env>`)
-- **Linux / macOS**: `source .venv/bin/activate` (or `conda activate <env>`)
+Using **`uv run`**, scripts automatically execute in the project's `.venv` without requiring manual environment activation:
 
-Once activated, you can run all scripts with `python PythonBindings/tests/...`.
+```bash
+uv run python PythonBindings/tests/demo_unit.py --backend cuda --headless --advance_frames 100 ...
+```
+*(Alternatively, if you prefer activating your environment beforehand via `.venv\Scripts\activate` or `source .venv/bin/activate`, you can simply run `python PythonBindings/tests/...`).*
 
 On the initial run, LuisaCompute JIT-compiles device kernels (cached under `build/bin/.cache`), so subsequent runs execute significantly faster. Output files are saved to `output/paper_cases/`. Specify `--backend cuda` for NVIDIA GPUs, `--backend metal` on macOS, or `--backend dx` / `--backend vk` for DirectX / Vulkan.
 
@@ -256,7 +228,7 @@ Evaluates the seven canonical intersecting boundary and closed configurations fr
 
 For each case:
 ```powershell
-python PythonBindings/tests/demo_unit.py `
+uv run python PythonBindings/tests/demo_unit.py `
     --backend cuda --headless --advance_frames 100 `
     --use_subdivision --subdiv_levels 3 --scene_id 0
 ```
@@ -265,7 +237,7 @@ Or with batching command:
 
 ```powershell
 0..6 | ForEach-Object {
-  python PythonBindings/tests/demo_unit.py `
+  uv run python PythonBindings/tests/demo_unit.py `
     --backend cuda --headless --advance_frames 300 `
     --use_subdivision --subdiv_levels 3 --scene_id $_
   if ($LASTEXITCODE -ne 0) { throw "Canonical unit $_ failed" }
@@ -279,7 +251,7 @@ A procedurally generated multi-layer folding benchmark exhibiting deep, nested s
 <p align="center"><img src="Document/cases_synthetic.jpg" alt="Synthetic fold: initial state, initial ray hits, and resolved state." width="85%"></p>
 
 ```powershell
-python PythonBindings/tests/demo_synthetic.py `
+uv run python PythonBindings/tests/demo_synthetic.py `
   --backend cuda --headless --advance_frames 400 `
   --start_from_initial 1 --use_ccd_linesearch 0 `
   --untangling_response_depth 0.005 `
@@ -309,12 +281,12 @@ git submodule update --init external/instant-mesh-intersection-repair
 Validate case ordering and hashes without loading the solver, then run the gate:
 
 ```powershell
-python PythonBindings/tests/test_batch_method_comparison_enhanced.py `
+uv run python PythonBindings/tests/test_batch_method_comparison_enhanced.py `
   --backend cuda --begin 1 --end 59 --dry_run
 ```
 
 ```powershell
-python -u PythonBindings/tests/test_batch_method_comparison_enhanced.py `
+uv run python -u PythonBindings/tests/test_batch_method_comparison_enhanced.py `
   --backend cuda --headless --begin 1 --end 59 `
   --advance_frames 100 --timeout 300 --no_export_per_frame
 ```
@@ -328,7 +300,7 @@ To inspect one Jang case, omit `--headless` and select, for example, `--begin 1 
 `test_load_from_obj.py` performs static self-intersection repair on any OBJ mesh: it loads the mesh, untangles it in quasi-static mode (no gravity, no floor), and writes the resolved surface as an OBJ, exiting with code 0 only on a clean collision report. The example below repairs the self-intersecting Klein bottle bundled with the ISIR submodule in five iterations (76 initial EF pairs to zero):
 
 ```powershell
-python PythonBindings/tests/test_load_from_obj.py `
+uv run python PythonBindings/tests/test_load_from_obj.py `
   --backend cuda --headless `
   --input_mesh external/instant-mesh-intersection-repair/data/misc/disc_kleinbottle.obj
 ```
@@ -338,7 +310,7 @@ python PythonBindings/tests/test_load_from_obj.py `
 Tests deep volumetric penetrations between watertight rigid solids (`MaterialType::Rigid`) from the Thingi10K dataset. Enabling `config.PRP_solid_interior_adjacency = True` establishes virtual volumetric chords connecting opposing entry and exit ray hits across the interior volume, avoiding topological disconnection around thick geometry. This benchmark evaluates 8 representative watertight models (300–2,600 faces) across CPU and GPU backends, comparing pure surface adjacency against solid interior adjacency:
 
 ```powershell
-python PythonBindings/tests/test_thingi10k_rigid_untangling.py `
+uv run python PythonBindings/tests/test_thingi10k_rigid_untangling.py `
   --backend cuda --headless --max_frames 35
 ```
 
@@ -346,7 +318,7 @@ python PythonBindings/tests/test_thingi10k_rigid_untangling.py `
 Without `--headless`, Thingi10K previews one of the eight models, selected with `--case_index 1` through `8` (default: `1`). Choose the preview configuration with `--use_gpu 0|1` and `--solid_adj 0|1`; both default to `0`. For example:
 
 ```powershell
-python PythonBindings/tests/test_thingi10k_rigid_untangling.py `
+uv run python PythonBindings/tests/test_thingi10k_rigid_untangling.py `
   --backend cuda --case_index 1 --solid_adj 1 --max_frames 35
 ```
 
