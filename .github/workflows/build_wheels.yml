@@ -48,6 +48,10 @@ jobs:
             --exclude libluisa-osl.so
             --exclude libluisa-coro.so
             --exclude libluisa-api.so
+            --exclude libluisa-tile.so
+            --exclude libluisa-tile-bridge-xir.so
+            --exclude libluisa-tile-bridge-tirx.so
+            --exclude libluisa-gui.so
             --exclude libluisa-backend-vulkan.so
             --exclude libluisa-backend-vk.so
             --exclude libluisa-validation-layer.so
@@ -98,6 +102,7 @@ jobs:
           export CXX=/opt/homebrew/opt/llvm/bin/clang++
           export CXXFLAGS="-D_LIBCPP_ENABLE_CXX20_REMOVED_TYPE_TRAITS"
           export CMAKE_ARGS="-D LUISA_COMPUTE_ENABLE_CUDA=OFF -D LUISA_COMPUTE_ENABLE_VULKAN=OFF -D LUISA_COMPUTE_ENABLE_METAL=ON -D LUISA_COMPUTE_ENABLE_DX=OFF -D LUISA_COMPUTE_ENABLE_FALLBACK=OFF"
+          export CIBW_REPAIR_WHEEL_COMMAND_MACOS="delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v --ignore-missing-dependencies {wheel}"
           python3 -m pip install -U cibuildwheel --break-system-packages
           export MACOSX_DEPLOYMENT_TARGET=${{ matrix.os }}.0
           python3 -m cibuildwheel --output-dir wheelhouse
