@@ -53,5 +53,6 @@ ResearchLog/Objective/SliceSampling/
 !Resources/Scenes/Penetrations/*
 *.csv
 *.png
+!Document/cli_untangling_results.png
 /best.state
 /tmp.log
