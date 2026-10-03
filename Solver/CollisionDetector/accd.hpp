@@ -1,3 +1,4 @@
+#include "Utils/device_log.h"
 // Modified from [https://github.com/st-tech/ppf-contact-solver]
 
 #pragma once
@@ -96,7 +97,7 @@ namespace lcs
 			if constexpr (print_ccd_iter_count)
 				$if(iter_count != 1)
 				{
-					luisa::compute::device_log("CCD iter for {}, toi = {}", iter_count, toi);
+					lcs::solver_device_log("CCD iter for {}, toi = {}", iter_count, toi);
 				};
 
 			// $if(toi != accd::line_search_max_t)

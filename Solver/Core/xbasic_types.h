@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Utils/device_log.h"
+
 #include <tuple>
 #include <cstddef>
 #include <array>
@@ -2309,19 +2311,19 @@ namespace lcs
 	// inline void print_largevec(const Var<LargeVector<12>>& vec)  { luisa::compute::device_log("({} {} {} {} {} {} {} {} {} {} {} {})", vec.vec[0].x, vec.vec[0].y, vec.vec[0].z, vec.vec[1].x, vec.vec[1].y, vec.vec[1].z, vec.vec[2].x, vec.vec[2].y, vec.vec[2].z, vec.vec[3].x, vec.vec[3].y, vec.vec[3].z); }
 	inline void print_largevec(const Var<LargeVector<3>>& vec)
 	{
-		luisa::compute::device_log("({})", vec.vec[0]);
+		lcs::solver_device_log("({})", vec.vec[0]);
 	}
 	inline void print_largevec(const Var<LargeVector<6>>& vec)
 	{
-		luisa::compute::device_log("({} {})", vec.vec[0], vec.vec[1]);
+		lcs::solver_device_log("({} {})", vec.vec[0], vec.vec[1]);
 	}
 	inline void print_largevec(const Var<LargeVector<9>>& vec)
 	{
-		luisa::compute::device_log("({} {} {})", vec.vec[0], vec.vec[1], vec.vec[2]);
+		lcs::solver_device_log("({} {} {})", vec.vec[0], vec.vec[1], vec.vec[2]);
 	}
 	inline void print_largevec(const Var<LargeVector<12>>& vec)
 	{
-		luisa::compute::device_log("({} {} {} {})", vec.vec[0], vec.vec[1], vec.vec[2], vec.vec[3]);
+		lcs::solver_device_log("({} {} {} {})", vec.vec[0], vec.vec[1], vec.vec[2], vec.vec[3]);
 	}
 	// inline void print_largevec(const Var<LargeVector<3>>& vec)   { luisa::compute::device_log("({:>10.5f} {:>10.5f} {:>10.5f})", vec.vec[0].x, vec.vec[0].y, vec.vec[0].z); }
 	// inline void print_largevec(const Var<LargeVector<6>>& vec)   { luisa::compute::device_log("({:>10.5f} {:>10.5f} {:>10.5f} {:>10.5f} {:>10.5f} {:>10.5f})", vec.vec[0].x, vec.vec[0].y, vec.vec[0].z, vec.vec[1].x, vec.vec[1].y, vec.vec[1].z); }

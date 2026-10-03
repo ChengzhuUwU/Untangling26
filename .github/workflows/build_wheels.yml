@@ -68,6 +68,8 @@ jobs:
             -D LUISA_COMPUTE_ENABLE_METAL=OFF
             -D LUISA_COMPUTE_ENABLE_DX=OFF
             -D LUISA_COMPUTE_ENABLE_FALLBACK=OFF
+            -D LUISA_COMPUTE_ENABLE_VK_XIR_SPIRV=ON
+            -D LCS_ENABLE_DEVICE_LOG=OFF
         run: |
           python -m pip install -U cibuildwheel
           python -m cibuildwheel --output-dir wheelhouse
@@ -149,6 +151,8 @@ jobs:
             -D LUISA_COMPUTE_ENABLE_DX=OFF
             -D LUISA_COMPUTE_ENABLE_METAL=OFF
             -D LUISA_COMPUTE_ENABLE_FALLBACK=OFF
+            -D LUISA_COMPUTE_ENABLE_VK_XIR_SPIRV=ON
+            -D LCS_ENABLE_DEVICE_LOG=OFF
         run: |
           python -m pip install -U cibuildwheel
           python -m cibuildwheel --output-dir wheelhouse

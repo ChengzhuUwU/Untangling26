@@ -1,3 +1,4 @@
+#include "Utils/device_log.h"
 #include "CollisionDetector/narrow_phase.h"
 #include "CollisionDetector/accd.hpp"
 #include "CollisionDetector/cipc_kernel.hpp"
@@ -481,7 +482,7 @@ namespace lcs // CCD
 							else
 							{
 								if constexpr (print_unsafe_toi)
-									device_log(
+									lcs::solver_device_log(
 										"VF CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, thickness = {}",
 										vid,
 										face,
@@ -523,7 +524,7 @@ namespace lcs // CCD
 						if constexpr (print_ccd_detail)
 							$if(toi != accd::line_search_max_t)
 							{
-								device_log("VF CCD : left = {}, vid = {}, right = {}, face = {}, TOI = {}, InitDist = {}, EndDist = {}",
+								lcs::solver_device_log("VF CCD : left = {}, vid = {}, right = {}, face = {}, TOI = {}, InitDist = {}, EndDist = {}",
 									vid,
 									vid,
 									fid,
@@ -688,7 +689,7 @@ namespace lcs // CCD
 								auto cross_r = cross(r0, r1);
 								auto parallel_measure = distance::squared_norm(cross_r) / (len0 * len1 + 1e-8f);
 								if constexpr (print_unsafe_toi)
-									device_log("EE CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, (Gap = {}/{}) thickness = {}, parallel_measure = {}",
+									lcs::solver_device_log("EE CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, (Gap = {}/{}) thickness = {}, parallel_measure = {}",
 										left_edge,
 										right_edge,
 										toi,
@@ -733,7 +734,7 @@ namespace lcs // CCD
 						if constexpr (print_ccd_detail)
 							$if(toi != accd::line_search_max_t)
 							{
-								device_log(
+								lcs::solver_device_log(
 									"EE CCD : left = {}, edge1 = {}, right = {}, edge2 = {}, TOI = {}, InitDist = {}, EndDist = {}",
 									left,
 									left_edge,
@@ -1053,7 +1054,7 @@ namespace lcs // DCD
 						{
 							if constexpr (print_dcd_detail)
 							{
-								device_log("Exist penetration in DCD VF pair {}-{} : d = {}, thickness = {}",
+								lcs::solver_device_log("Exist penetration in DCD VF pair {}-{} : d = {}, thickness = {}",
 									vid,
 									face,
 									sqrt_scalar(d2),
@@ -1113,7 +1114,7 @@ namespace lcs // DCD
 
 							$if(is_nan_scalar(k1) | is_nan_scalar(k2) | is_inf_scalar(k1) | is_inf_scalar(k2))
 							{
-								device_log("NaN/INF stiffness in DCD VF pair {}-{} : d = {} (d2 = {}), thickness = {}, d_hat = {}, k1 = {}, k2 = {}",
+								lcs::solver_device_log("NaN/INF stiffness in DCD VF pair {}-{} : d = {} (d2 = {}), thickness = {}, d_hat = {}, k1 = {}, k2 = {}",
 									vid,
 									face,
 									d,
@@ -1138,7 +1139,7 @@ namespace lcs // DCD
 									narrow_phase_list_indices->write(idx, make_uint2(vid, fid));
 									// device_log("Make VF Pair {} : {}, indices = {}", idx, vf_pair, vf_pair->get_indices());
 									if constexpr (print_dcd_detail)
-										device_log("Make VF pair {}: indices = {}, dist = {}, normal = {}, k1 = {}, k2 = {}, d_hat = {}, thickness = {}",
+										lcs::solver_device_log("Make VF pair {}: indices = {}, dist = {}, normal = {}, k1 = {}, k2 = {}, d_hat = {}, thickness = {}",
 											idx,
 											vf_pair->get_indices(),
 											d,
@@ -1234,7 +1235,7 @@ namespace lcs // DCD
 						{
 							if constexpr (print_dcd_detail)
 							{
-								device_log("Exist penetration in DCD EE pair {}-{} : d = {}, thickness = {}",
+								lcs::solver_device_log("Exist penetration in DCD EE pair {}-{} : d = {}, thickness = {}",
 									left_edge,
 									right_edge,
 									sqrt_scalar(d2),
@@ -1294,7 +1295,7 @@ namespace lcs // DCD
 
 							$if(is_nan_scalar(k1) | is_nan_scalar(k2) | is_inf_scalar(k1) | is_inf_scalar(k2))
 							{
-								device_log("NaN/INF stiffness in DCD EE pair {}-{} : d = {} (d2 = {}) thickness = {}, d_hat = {}, k1 = {}, k2 = {}",
+								lcs::solver_device_log("NaN/INF stiffness in DCD EE pair {}-{} : d = {} (d2 = {}) thickness = {}, d_hat = {}, k1 = {}, k2 = {}",
 									left_edge,
 									right_edge,
 									d,
@@ -1325,7 +1326,7 @@ namespace lcs // DCD
 									narrow_phase_list_indices->write(idx, make_uint2(left, right));
 
 									if constexpr (print_dcd_detail)
-										device_log("Make EE pair {}: indices = {}, dist = {}, normal = {}, k1 = {}, k2 = {}, d_hat = {}, thickness = {}",
+										lcs::solver_device_log("Make EE pair {}: indices = {}, dist = {}, normal = {}, k1 = {}, k2 = {}, d_hat = {}, thickness = {}",
 											idx,
 											ee_pair->get_indices(),
 											d,
@@ -2657,7 +2658,7 @@ namespace lcs // Compute Contact Gradient & Hessian & Assemble
 				{
 					Float3 delta = weight[0] * sa_x.read(indices[0]) + weight[1] * sa_x.read(indices[1])
 						+ weight[2] * sa_x.read(indices[2]) + weight[3] * sa_x.read(indices[3]);
-					device_log("Pair {} has NaN/Inf gradient: k1/k2 = {}/{}, dist = {}, indices = {}, delta = {}",
+					lcs::solver_device_log("Pair {} has NaN/Inf gradient: k1/k2 = {}/{}, dist = {}, indices = {}, delta = {}",
 						pair_idx,
 						k1,
 						k2,
@@ -3809,7 +3810,7 @@ namespace lcs // Host Methods
 
 							Float toi =
 								accd::point_triangle_ccd(t0_p, t1_p, t0_f0, t0_f1, t0_f2, t1_f0, t1_f1, t1_f2, thickness);
-							device_log("BroadPhase Pair {} : toi = {}, vid {} & fid {} (face {})", pair_idx, toi, vid, fid, face);
+							lcs::solver_device_log("BroadPhase Pair {} : toi = {}, vid {} & fid {} (face {})", pair_idx, toi, vid, fid, face);
 						};
 
 						// toi = ParallelIntrinsic::block_intrinsic_reduce(pair_idx, toi, ParallelIntrinsic::warp_reduce_op_min<float>);
@@ -3916,9 +3917,9 @@ namespace lcs // Host Methods
 						Float3 eb_t1_p0 = buffer->read(6);
 						Float3 eb_t1_p1 = buffer->read(7);
 
-						device_log("Start distance = {}",
+						lcs::solver_device_log("Start distance = {}",
 							distance::edge_edge_distance_squared_unclassified(ea_t0_p0, ea_t0_p1, eb_t0_p0, eb_t0_p1));
-						device_log("End   distance = {}",
+						lcs::solver_device_log("End   distance = {}",
 							distance::edge_edge_distance_squared_unclassified(ea_t1_p0, ea_t1_p1, eb_t1_p0, eb_t1_p1));
 
 						toi = accd::edge_edge_ccd(
@@ -3927,7 +3928,7 @@ namespace lcs // Host Methods
 
 					// $if (toi != host_accd::line_search_max_t)
 					{
-						device_log("BroadPhase Pair {} : toi = {}, edge1 {} ({}) & edge2 {} ({})", pair_idx, toi, left, left_edge, right, right_edge);
+						lcs::solver_device_log("BroadPhase Pair {} : toi = {}, edge1 {} ({}) & edge2 {} ({})", pair_idx, toi, left, left_edge, right, right_edge);
 					};
 
 					toi = ParallelIntrinsic::block_intrinsic_reduce(
