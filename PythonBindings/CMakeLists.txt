@@ -67,6 +67,19 @@ install(FILES
 #   "Library not loaded: @rpath/libluisa-core.dylib".
 # Install them next to lcs_py so the same @loader_path RPATH picks them up.
 if (SKBUILD)
+    # Root-level wheel modules also depend on upstream's lib/ and bin/ installs.
+    # Include these paths on every module: a dlopened backend cannot rely on
+    # lcs_py's search paths being inherited by the platform's dynamic loader.
+    function(_lcs_wheel_runtime_paths target_name)
+        if (APPLE)
+            set_property(TARGET ${target_name} APPEND PROPERTY INSTALL_RPATH
+                "@loader_path/lib" "@loader_path/bin")
+        elseif (UNIX)
+            set_property(TARGET ${target_name} APPEND PROPERTY INSTALL_RPATH
+                "$ORIGIN/lib" "$ORIGIN/bin")
+        endif()
+    endfunction()
+
     set(_LCS_LUISA_RUNTIME_TARGETS
         luisa-compute-core
         luisa-compute-ast
@@ -79,6 +92,7 @@ if (SKBUILD)
     )
     foreach(_lcs_t IN LISTS _LCS_LUISA_RUNTIME_TARGETS)
         if (TARGET ${_lcs_t})
+            _lcs_wheel_runtime_paths(${_lcs_t})
             install(TARGETS ${_lcs_t}
                 LIBRARY DESTINATION .
                 RUNTIME DESTINATION .
@@ -94,6 +108,7 @@ if (SKBUILD)
     set(_LCS_LUISA_BACKEND_NAMES metal cuda dx vk vulkan fallback)
     foreach(_lcs_b IN LISTS _LCS_LUISA_BACKEND_NAMES)
         if (TARGET luisa-compute-backend-${_lcs_b})
+            _lcs_wheel_runtime_paths(luisa-compute-backend-${_lcs_b})
             install(TARGETS luisa-compute-backend-${_lcs_b}
                 LIBRARY DESTINATION .
                 RUNTIME DESTINATION .
@@ -103,7 +118,26 @@ if (SKBUILD)
     unset(_lcs_b)
     unset(_LCS_LUISA_BACKEND_NAMES)
 
+    # The Vulkan module imports glslang beside lcs_py. Upstream's bin/ install
+    # location is not searched by the Windows loader when loading that module.
+    if (TARGET luisa-compute-backend-vk AND TARGET glslang)
+        install(TARGETS glslang
+            LIBRARY DESTINATION .
+            RUNTIME DESTINATION .
+        )
+    endif()
+
+    # CUDA locates this helper directly in Context::runtime_directory(), which
+    # is the directory containing lcs_py. LuisaCompute's own install rule puts
+    # it under bin/, so a wheel also needs a copy next to the Python extension.
+    if (TARGET luisa-cuda-nvrtc-standalone-compiler)
+        install(TARGETS luisa-cuda-nvrtc-standalone-compiler
+            RUNTIME DESTINATION .
+        )
+    endif()
+
     if (TARGET luisa-compute-validation-layer)
+        _lcs_wheel_runtime_paths(luisa-compute-validation-layer)
         install(TARGETS luisa-compute-validation-layer
             LIBRARY DESTINATION .
             RUNTIME DESTINATION .

@@ -139,11 +139,21 @@ option(LUISA_COMPUTE_ENABLE_VULKAN "Enable Vulkan backend" OFF)
 option(LUISA_COMPUTE_ENABLE_DX "Enable DirectX backend" OFF)
 option(LUISA_COMPUTE_ENABLE_FALLBACK "Enable Fallback (CPU TBB) backend" OFF)
 
+if(LUISA_COMPUTE_ENABLE_VULKAN)
+    set(_LCS_DEVICE_LOG_DEFAULT OFF)
+else()
+    set(_LCS_DEVICE_LOG_DEFAULT ON)
+endif()
+option(LCS_ENABLE_DEVICE_LOG "Emit diagnostic printf calls inside solver kernels" ${_LCS_DEVICE_LOG_DEFAULT})
+unset(_LCS_DEVICE_LOG_DEFAULT)
+
 # Solver
 file(GLOB_RECURSE LUISA_COMPUTE_SOLVER_LIB_SOURCES CONFIGURE_DEPENDS Solver/*.cpp Solver/*.cc)
 file(GLOB_RECURSE LUISA_COMPUTE_SOLVER_LIB_HEADERS CONFIGURE_DEPENDS Solver/*.h CONFIGURE_DEPENDS Solver/*.hpp)
 add_library(luisa-compute-solver-lib STATIC ${LUISA_COMPUTE_SOLVER_LIB_SOURCES} ${LUISA_COMPUTE_SOLVER_LIB_HEADERS})
 set_target_properties(luisa-compute-solver-lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_definitions(luisa-compute-solver-lib PUBLIC
+    LCS_ENABLE_DEVICE_LOG=$<BOOL:${LCS_ENABLE_DEVICE_LOG}>)
 target_include_directories(luisa-compute-solver-lib PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Solver>)
 
 

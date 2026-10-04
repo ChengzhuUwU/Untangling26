@@ -1,3 +1,4 @@
+#include "Utils/device_log.h"
 #include "CollisionDetector/lbvh.h"
 #include "CollisionDetector/aabb.h"
 #include "Utils/cpu_parallel.h"
@@ -73,7 +74,7 @@ namespace lcs
 			$if(iter > 1000)
 			{
 				sa_is_healthy->write(0, 0u);
-				device_log("Thread {} read last flag {}", luisa::compute::dispatch_id().x, flag);
+				lcs::solver_device_log("Thread {} read last flag {}", luisa::compute::dispatch_id().x, flag);
 				$break;
 			};
 			iter += 1;
@@ -955,7 +956,7 @@ namespace lcs
 				sa_morton_sorted->write(lid, mc64);
 				sa_children->write(7 + lid, makeUint2(lid));
 				{
-					device_log("lid {} morton32 = {}, morton64 = {}", lid, mc32, mc64);
+					lcs::solver_device_log("lid {} morton32 = {}, morton64 = {}", lid, mc32, mc64);
 				}
 			});
 
