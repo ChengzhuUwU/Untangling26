@@ -9,7 +9,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "untangling26"
-version = "0.2"
+version = "0.3"
 description = "Type-Free Global Intersection Analysis with Linear Displacement Fields (SIGGRAPH Asia 2026)"
 readme = "README.md"
 requires-python = ">=3.10"
