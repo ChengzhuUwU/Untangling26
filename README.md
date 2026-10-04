@@ -67,9 +67,9 @@ The method does not use collision history and does not distinguish contour types
 
 ### Install
 
-`untangling26` is [on PyPI](https://pypi.org/project/untangling26/0.2/).
+`untangling26` is [on PyPI](https://pypi.org/project/untangling26/).
 
-Version 0.2 has **CPython 3.13** wheels for all three platforms:
+Prebuilt **CPython 3.13** wheels are available for all three platforms:
 
 | Platform | Architecture / minimum OS | Backend |
 |---|---|---|
@@ -82,7 +82,7 @@ You need a compatible GPU. For other Python versions, architectures, or backends
 Inside a Python 3.13 environment:
 
 ```bash
-python -m pip install untangling26==0.2
+python -m pip install untangling26
 untangling26 --version
 ```
 
@@ -91,13 +91,13 @@ To create one on Windows with the Python launcher:
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install untangling26==0.2
+python -m pip install untangling26
 ```
 
 Or let [uv](https://docs.astral.sh/uv/getting-started/installation/) fetch it and install the command into its own environment:
 
 ```bash
-uv tool install --python 3.13 untangling26==0.2
+uv tool install --python 3.13 untangling26
 ```
 
 ### Command-line mesh repair
@@ -176,7 +176,7 @@ The demo scripts and meshes are in the repository, not in the wheel. Clone it an
 git clone https://github.com/ChengzhuUwU/Untangling26.git
 cd Untangling26
 uv venv --python 3.13
-uv pip install "untangling26[gui]==0.2" triangle
+uv pip install "untangling26[gui]" triangle
 ```
 
 <details>
@@ -185,7 +185,7 @@ uv pip install "untangling26[gui]==0.2" triangle
 ```bash
 conda create -n untangling python=3.13 -y
 conda activate untangling
-pip install "untangling26[gui]==0.2" triangle
+pip install "untangling26[gui]" triangle
 ```
 </details>
 
