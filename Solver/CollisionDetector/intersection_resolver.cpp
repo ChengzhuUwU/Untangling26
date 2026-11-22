@@ -282,7 +282,6 @@ namespace lcs // Intersection Detection
 
 				$if(intersect)
 				{
-
 					Float2 edge_bary = { 1.0f - out_time, out_time };
 
 					Var<CollisionPair::EfPair> ef_pair;
@@ -2024,161 +2023,380 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 	const std::vector<uint>& host_count = host_collision_data->narrow_phase_collision_count;
 	const uint				 num_pairs = host_count[1];
 
-	std::vector<std::vector<uint>>& intersection_contours = host_untangling_data->intersection_contours;
-	const uint						num_contours = intersection_contours.size();
-	const auto&						intersection_contours_info = host_untangling_data->intersection_contours_info;
+	const auto& intersection_contours = host_untangling_data->intersection_contours;
+	const uint	num_contours = static_cast<uint>(intersection_contours.size());
+	const auto& intersection_contours_info = host_untangling_data->intersection_contours_info;
+	const auto& region_contains_verts = host_untangling_data->region_contains_verts;
 
 	auto&		ef_list = host_collision_data->narrow_phase_list_ef;
 	const auto& ef_indices = host_collision_data->narrow_phase_list_ef_indices;
 	const auto& ef_pair_mesh_index = host_untangling_data->ef_pair_mesh_index;
 	const auto& ef_pair_contour_index = host_untangling_data->ef_pair_contour_index;
+	const auto& sa_x = host_sim_data->sa_x;
+	const auto& sa_faces = host_mesh_data->sa_faces;
 
-	auto get_vert_regions = [&](const uint vid)
+	const uint	num_faces = host_mesh_data->num_faces;
+	const float depth_threshold = get_scene_params().untangling_response_depth;
+	// Match stiffness_untangling (same scale as stiffness_collision) so attraction is never overpowered by proximity repulsion.
+	const float response_stiffness = get_scene_params().stiffness_untangling;
+	// Cap per-step displacement relative to mesh edge length so CCD-free steps cannot overshoot and fold the cloth.
+	const float safe_step_cap = std::min(
+		depth_threshold,
+		std::max(0.02f, (gia_cached_avg_edge_len > 0.0f ? 1.5f * gia_cached_avg_edge_len : 0.05f)));
+	constexpr float response_area_floor = 3e-6f;
+	constexpr float response_margin = 3e-3f;
+
+	// Reset EF pair responses; only double-open contours populate active EF responses.
+	gia_has_active_ef_response = false;
+	for (uint pair_idx = 0u; pair_idx < num_pairs; ++pair_idx)
 	{
-		uint prefix = host_untangling_data->vert_region_indices_csr[vid];
-		uint suffix = host_untangling_data->vert_region_indices_csr[vid + 1];
-		return std::span(host_untangling_data->vert_region_indices_csr.data() + prefix, suffix - prefix);
+		ef_list[pair_idx].set_stiffness(0.0f);
+		ef_list[pair_idx].set_gradient(luisa::make_float3(0.0f, 1.0f, 0.0f));
+	}
+
+	std::vector<CollisionPair::CollisionPairTemplate> target_pairs;
+	std::vector<uint4>								  target_indices;
+
+	auto get_pair_edge_point = [&](const uint pair_idx) -> float3
+	{
+		const auto&	 pair = ef_list[pair_idx];
+		const uint2	 edge = pair.get_edge();
+		const float2 bary = pair.get_edge_bary();
+		return sa_x[edge.x] * bary.x + sa_x[edge.y] * bary.y;
 	};
 
-	auto vert_has_tag = [&](const uint vid, const uint tag)
+	for (uint contour_idx = 0u; contour_idx < num_contours; ++contour_idx)
 	{
-		auto regions = get_vert_regions(vid);
-		for (const uint t : regions)
+		const auto& contour = intersection_contours[contour_idx];
+		const auto& contour_info = intersection_contours_info[contour_idx];
+		const uint2 invalid_regions = (contour_idx < gia_invalid_region_pair.size())
+			? gia_invalid_region_pair[contour_idx]
+			: luisa::make_uint2(-1u, -1u);
+
+		const bool has_closed_region = (invalid_regions[0] != -1u || invalid_regions[1] != -1u);
+
+		if (has_closed_region)
 		{
-			if (t == tag)
-				return true;
-		}
-		return false;
-	};
+			const bool	both_sides_pull = (invalid_regions[0] != -1u && invalid_regions[1] != -1u);
+			const float side_scale = both_sides_pull ? 0.5f : 1.0f;
 
-	CpuParallel::parallel_for(0, num_pairs,
-		[&](const uint pair_idx)
-		{
-			const uint contour_idx = ef_pair_contour_index[pair_idx];
-
-			auto&		pair = ef_list[pair_idx];
-			const uint2 edge = pair.get_edge();
-			const uint3 face = pair.get_face();
-			const uint	m_e = ef_pair_mesh_index[pair_idx];
-			const uint	m_f = m_e ^ 1u;
-			const uint	tag_e = 2u * contour_idx + m_e;
-			const uint	tag_f = 2u * contour_idx + m_f;
-
-			const uint			   eid = ef_indices[pair_idx].x;
-			const uint			   fid = ef_indices[pair_idx].y;
-			CollisionPair::EfPair& info = pair;
-
-			float3 local_grad = luisa::make_float3(0.0f);
+			// Case A: Global region-to-surface VF attraction for all vertices in closed invalid regions.
+			for (uint mesh_idx = 0u; mesh_idx < 2u; ++mesh_idx)
 			{
-				const auto& sa_x = host_sim_data->sa_x;
-				float3		edge_poses[2] = { sa_x[edge.x], sa_x[edge.y] };
-				float3		face_poses[3] = { sa_x[face.x], sa_x[face.y], sa_x[face.z] };
-				auto		accumulate_point_face_gradient = [&](const float3& point_pos)
+				const uint invalid_region = invalid_regions[mesh_idx];
+				if (invalid_region == -1u || invalid_region >= region_contains_verts.size())
+					continue;
+				const auto& invalid_verts = region_contains_verts[invalid_region];
+				if (invalid_verts.empty())
+					continue;
+
+				const uint opp_mesh = mesh_idx ^ 1u;
+				const uint opp_invalid_region = invalid_regions[opp_mesh];
+
+				// Build opposite target face set: pierced/contour-adjacent faces union faces touching opposite invalid region.
+				std::set<uint> target_face_set;
+				if (contour_idx < gia_contour_pierced_faces.size())
 				{
-					auto bary = host_distance::point_triangle_distance_coeff_unclassified(
-						Eigen::Vector3f(point_pos.x, point_pos.y, point_pos.z),
-						Eigen::Vector3f(face_poses[0].x, face_poses[0].y, face_poses[0].z),
-						Eigen::Vector3f(face_poses[1].x, face_poses[1].y, face_poses[1].z),
-						Eigen::Vector3f(face_poses[2].x, face_poses[2].y, face_poses[2].z));
-					float3 diff = bary[0] * (point_pos - face_poses[0])
-						+ bary[1] * (point_pos - face_poses[1])
-						+ bary[2] * (point_pos - face_poses[2]);
-					const float diff_norm_sqr = luisa::dot(diff, diff);
-					if (!(diff_norm_sqr > 1e-20f) || luisa::isinf(diff_norm_sqr))
-						return;
-					const float dist = luisa::sqrt(diff_norm_sqr);
-					const float max_move = std::min(1e-3f, dist);
-					const float C = -max_move - 1e-3f;
-					local_grad -= C * diff / dist;
-				};
-				if (vert_has_tag(face.x, tag_f) || vert_has_tag(face.y, tag_f) || vert_has_tag(face.z, tag_f))
+					for (const uint fid : gia_contour_pierced_faces[contour_idx][opp_mesh])
+					{
+						if (fid < num_faces)
+							target_face_set.insert(fid);
+					}
+				}
+				if (opp_invalid_region != -1u && opp_invalid_region < region_contains_verts.size())
 				{
-					const bool e1_flipped = vert_has_tag(edge.x, tag_e);
-					const bool e2_flipped = vert_has_tag(edge.y, tag_e);
-					if (e1_flipped)
-						accumulate_point_face_gradient(edge_poses[0]);
-					if (e2_flipped)
-						accumulate_point_face_gradient(edge_poses[1]);
+					for (const uint ov : region_contains_verts[opp_invalid_region])
+					{
+						for (const uint fid : host_mesh_data->vert_adj_faces[ov])
+						{
+							if (fid < num_faces)
+								target_face_set.insert(fid);
+						}
+					}
+				}
+				if (target_face_set.empty())
+					continue;
+
+				std::vector<uint> target_faces(target_face_set.begin(), target_face_set.end());
+				std::vector<uint> src_verts(invalid_verts.begin(), invalid_verts.end());
+
+				// Parity 0 means vertex lies on +N_f side of opposite faces => valid side is -N_f.
+				const float valid_side_sign = ((invalid_region & 1u) == 0u) ? -1.0f : 1.0f;
+
+				// Compute area-weighted coherent pull normal over opposite target faces to prevent inward crumpling
+				// on faceted caps/pyramids (e.g. Closed, Eight, LL at high subdivision levels).
+				float3 coherent_normal_sum = luisa::make_float3(0.0f);
+				float  coherent_area_sum = 0.0f;
+				for (const uint fid : target_faces)
+				{
+					const float	 af = std::max(host_mesh_data->sa_rest_face_area[fid], 1e-8f);
+					const float3 nf = valid_side_sign * gia_face_normals[fid];
+					if (luisa::dot(nf, nf) > 1e-12f)
+					{
+						coherent_normal_sum += af * nf;
+						coherent_area_sum += af;
+					}
+				}
+				const float	 coherent_len = luisa::length(coherent_normal_sum);
+				const bool	 use_coherent_normal = (coherent_area_sum > 0.0f) && (coherent_len > 0.25f * coherent_area_sum);
+				const float3 coherent_normal = use_coherent_normal
+					? (coherent_normal_sum / coherent_len)
+					: luisa::make_float3(0.0f);
+
+				std::vector<CollisionPair::CollisionPairTemplate> local_pairs(src_verts.size());
+				std::vector<uint4>								  local_indices(src_verts.size());
+				std::vector<luisa::ubyte>						  local_valid(src_verts.size(), 0u);
+
+				CpuParallel::parallel_for(0u,
+					static_cast<uint>(src_verts.size()),
+					[&](const uint idx)
+					{
+						const uint	 vid = src_verts[idx];
+						const float3 xv = sa_x[vid];
+
+						uint   best_fid = -1u;
+						float  best_dist_sq = std::numeric_limits<float>::max();
+						float3 best_bary = luisa::make_float3(1.0f / 3.0f);
+						float3 best_q = xv;
+
+						for (const uint fid : target_faces)
+						{
+							const uint3 f = sa_faces[fid];
+							if (f.x == vid || f.y == vid || f.z == vid)
+								continue;
+							const float3 f0 = sa_x[f.x];
+							const float3 f1 = sa_x[f.y];
+							const float3 f2 = sa_x[f.z];
+							const auto	 ebary = host_distance::point_triangle_distance_coeff_unclassified(
+								Eigen::Vector3f(xv.x, xv.y, xv.z),
+								Eigen::Vector3f(f0.x, f0.y, f0.z),
+								Eigen::Vector3f(f1.x, f1.y, f1.z),
+								Eigen::Vector3f(f2.x, f2.y, f2.z));
+							const float3 bary = luisa::make_float3(ebary[0], ebary[1], ebary[2]);
+							const float3 q = bary.x * f0 + bary.y * f1 + bary.z * f2;
+							const float3 d = q - xv;
+							const float	 d2 = luisa::dot(d, d);
+							if (d2 < best_dist_sq)
+							{
+								best_dist_sq = d2;
+								best_fid = fid;
+								best_bary = bary;
+								best_q = q;
+							}
+						}
+						if (best_fid == -1u)
+							return;
+
+						const float3 diff = best_q - xv;
+						const float	 dist = std::sqrt(best_dist_sq);
+
+						float3 n_pull = luisa::make_float3(0.0f);
+						float  pull_depth = 0.0f;
+						if (use_coherent_normal)
+						{
+							n_pull = coherent_normal;
+							pull_depth = std::max(0.0f, luisa::dot(diff, coherent_normal));
+						}
+						else
+						{
+							const float3 n_valid = valid_side_sign * gia_face_normals[best_fid];
+							const float	 n_valid_len = luisa::length(n_valid);
+							if (n_valid_len > 1e-6f)
+							{
+								const float3 n_valid_unit = n_valid / n_valid_len;
+								const float	 signed_depth = luisa::dot(diff, n_valid_unit);
+								if (dist > 1e-6f && luisa::dot(diff / dist, n_valid_unit) > 0.25f)
+								{
+									n_pull = diff / dist;
+									pull_depth = dist;
+								}
+								else
+								{
+									n_pull = n_valid_unit;
+									pull_depth = std::max(0.0f, signed_depth);
+								}
+							}
+							else if (dist > 1e-6f)
+							{
+								n_pull = diff / dist;
+								pull_depth = dist;
+							}
+							else
+							{
+								return;
+							}
+						}
+
+						const float target_move = std::min(side_scale * (pull_depth + response_margin), safe_step_cap);
+						const float C = -target_move;
+						const float area = std::max(
+							0.5f * (host_mesh_data->sa_rest_vert_area[vid] + host_mesh_data->sa_rest_face_area[best_fid]),
+							response_area_floor);
+						const float stiff = area * response_stiffness;
+						const float k1 = stiff * C;
+						const float k2 = stiff;
+						if (!std::isfinite(k1) || !std::isfinite(k2) || !std::isfinite(n_pull.x) || !std::isfinite(n_pull.y) || !std::isfinite(n_pull.z))
+							return;
+
+						const uint3 face = sa_faces[best_fid];
+						CollisionPair::CollisionPairTemplate pair;
+						pair.make_vf_pair(luisa::make_uint4(vid, face.x, face.y, face.z), n_pull, k1, k2, area, best_bary);
+						local_pairs[idx] = pair;
+						local_indices[idx] = luisa::make_uint4(vid, best_fid, 2u * contour_idx + mesh_idx, 0u);
+						local_valid[idx] = 1u;
+					},
+					32);
+
+				for (size_t idx = 0; idx < src_verts.size(); ++idx)
+				{
+					if (local_valid[idx])
+					{
+						target_pairs.push_back(local_pairs[idx]);
+						target_indices.push_back(local_indices[idx]);
+					}
 				}
 			}
-
-			float kappa = 1e6f;
-			float edge_area = host_mesh_data->sa_rest_edge_area[eid];
-			float face_area = host_mesh_data->sa_rest_face_area[fid];
-			float stiffness = 0.5f * (edge_area + face_area) * kappa;
-
-			const float2 edge_bary = info.get_edge_bary();
-			if (edge_bary[0] == 0.0f || edge_bary[1] == 0.0f)
-			{
-				stiffness = 0.0f;
-				local_grad = luisa::make_float3(0, 0, 0);
-			}
-			info.set_stiffness(stiffness);
-			info.set_gradient(local_grad);
-		});
-
-	std::vector<float3> contour_gradients(num_contours, float3{ 0.0f, 0.0f, 0.0f });
-	{
-		auto get_pair_edge_point = [&](const uint pair_idx)
+		}
+		else if (get_scene_params().GIA_use_EF_response)
 		{
-			const auto&	 pair = ef_list[pair_idx];
-			const uint2	 edge = pair.get_edge();
-			const float2 bary = pair.get_edge_bary();
-			const auto&	 sa_x = host_sim_data->sa_x;
-			return sa_x[edge.x] * bary.x + sa_x[edge.y] * bary.y;
-		};
-
-		for (uint contour_idx = 0; contour_idx < num_contours; contour_idx++)
-		{
-			const auto& contour_info = intersection_contours_info[contour_idx];
-			if (contour_info.contour_type != ContourType::BIBI || contour_info.boundary_pairs.size() != 2u)
-				continue;
-
-			const auto& contour = intersection_contours[contour_idx];
-			uint		boundary_pair_0 = contour_info.boundary_pairs[0];
-			uint		boundary_pair_1 = contour_info.boundary_pairs[1];
-			if (ef_pair_mesh_index[boundary_pair_0] == 1u && ef_pair_mesh_index[boundary_pair_1] == 0u)
-			{
-				std::swap(boundary_pair_0, boundary_pair_1);
-			}
-
-			const float3 boundary_point_0 = get_pair_edge_point(boundary_pair_0);
-			const float3 boundary_point_1 = get_pair_edge_point(boundary_pair_1);
-			const float3 boundary_vector = boundary_point_1 - boundary_point_0;
-			const float	 boundary_len_sqr = luisa::dot(boundary_vector, boundary_vector);
-			const float	 boundary_len = luisa::sqrt(boundary_len_sqr);
-
-			float3& contour_gradient = contour_gradients[contour_idx];
-			contour_gradient = boundary_vector / boundary_len * std::min(2e-3f, boundary_len + 1e-3f);
-			if (!(boundary_len_sqr > 1e-12f) || luisa::isinf(boundary_len_sqr))
-			{
-				contour_gradient = float3(0.0f);
-			}
-
+			// Case B: Double-open contour (e.g. BIBI or leaked/open fallback) -> resolution-independent EF response.
+			uint  n_real_pairs = 0u;
+			float total_contour_len = 0.0f;
 			for (const uint pair_idx : contour)
 			{
-				auto&	   pair = ef_list[pair_idx];
-				const bool edge_on_mesh_0 = ef_pair_mesh_index[pair_idx] == 0u;
-				pair.set_gradient(edge_on_mesh_0 ? -contour_gradient : contour_gradient);
+				if (ef_list[pair_idx].get_is_loop_vertex())
+					continue;
+				n_real_pairs++;
+				total_contour_len += host_untangling_data->ef_pair_length[pair_idx];
+			}
+			if (n_real_pairs == 0u)
+				continue;
+
+			if (contour_info.contour_type == ContourType::BIBI && contour_info.boundary_pairs.size() == 2u)
+			{
+				uint boundary_pair_0 = contour_info.boundary_pairs[0];
+				uint boundary_pair_1 = contour_info.boundary_pairs[1];
+				if (ef_pair_mesh_index[boundary_pair_0] == 1u && ef_pair_mesh_index[boundary_pair_1] == 0u)
+					std::swap(boundary_pair_0, boundary_pair_1);
+
+				const float3 boundary_point_0 = get_pair_edge_point(boundary_pair_0);
+				const float3 boundary_point_1 = get_pair_edge_point(boundary_pair_1);
+				const float3 boundary_vector = boundary_point_1 - boundary_point_0;
+				const float	 boundary_len_sqr = luisa::dot(boundary_vector, boundary_vector);
+				if (!(boundary_len_sqr > 1e-12f) || !std::isfinite(boundary_len_sqr))
+					continue;
+
+				const float	 boundary_len = std::sqrt(boundary_len_sqr);
+				const float	 step_mag = std::min(safe_step_cap, boundary_len + response_margin);
+				const float3 contour_grad = (boundary_vector / boundary_len) * step_mag;
+				const float	 eff_area = std::max(boundary_len * boundary_len / static_cast<float>(n_real_pairs), response_area_floor);
+				const float	 stiff = eff_area * response_stiffness;
+
+				gia_has_active_ef_response = true;
+				for (const uint pair_idx : contour)
+				{
+					if (ef_list[pair_idx].get_is_loop_vertex())
+						continue;
+					auto&	   pair = ef_list[pair_idx];
+					const bool edge_on_mesh_0 = (ef_pair_mesh_index[pair_idx] == 0u);
+					pair.set_stiffness(stiff);
+					// Unified convention: cgB += -stiff * w * grad => mesh 0 moves along +contour_grad, mesh 1 along -contour_grad.
+					pair.set_gradient(edge_on_mesh_0 ? -contour_grad : contour_grad);
+				}
+			}
+			else if (contour_info.contour_type == ContourType::BLI
+				&& contour_info.boundary_pairs.size() == 1u
+				&& contour_info.loop_pairs.size() == 1u)
+			{
+				// Resolution-independent BLI separation: pull boundary mesh endpoint P_B toward loop vertex P_L
+				// (direct geometric analogue of BIBI, avoiding 1/(E·N) grazing singularities in multi-pair ICM sums).
+				const uint	 boundary_pair = contour_info.boundary_pairs[0];
+				const uint	 loop_pair = contour_info.loop_pairs[0];
+				const uint	 boundary_mesh = ef_pair_mesh_index[boundary_pair];
+				const float3 boundary_point = get_pair_edge_point(boundary_pair);
+				const float3 loop_point = get_pair_edge_point(loop_pair);
+				const float3 sep_vec = loop_point - boundary_point;
+				const float	 sep_len_sqr = luisa::dot(sep_vec, sep_vec);
+				if (!(sep_len_sqr > 1e-12f) || !std::isfinite(sep_len_sqr))
+					continue;
+
+				const float	 sep_len = std::sqrt(sep_len_sqr);
+				const float	 step_mag = std::min(safe_step_cap, sep_len + response_margin);
+				const float3 contour_grad = (sep_vec / sep_len) * step_mag;
+				const float	 eff_area = std::max(sep_len * sep_len / static_cast<float>(n_real_pairs), response_area_floor);
+				const float	 stiff = eff_area * response_stiffness;
+
+				gia_has_active_ef_response = true;
+				for (const uint pair_idx : contour)
+				{
+					if (ef_list[pair_idx].get_is_loop_vertex())
+						continue;
+					auto&	   pair = ef_list[pair_idx];
+					const bool edge_on_boundary_mesh = (ef_pair_mesh_index[pair_idx] == boundary_mesh);
+					pair.set_stiffness(stiff);
+					// Move boundary_mesh along +(P_L - P_B) and opposite side along -(P_L - P_B).
+					pair.set_gradient(edge_on_boundary_mesh ? -contour_grad : contour_grad);
+				}
+			}
+			else
+			{
+				// General open / leaked contour fallback: accumulated ICM contour-length minimization gradient.
+				// Bound each pair's raw local gradient before summation so a single grazing pair (small E·N)
+				// cannot dominate and destabilize the contour direction.
+				constexpr uint ref_mesh_idx = 0u;
+				float3		   accum_grad = luisa::make_float3(0.0f);
+				for (const uint pair_idx : contour)
+				{
+					if (ef_list[pair_idx].get_is_loop_vertex())
+						continue;
+					const uint	 eid = ef_indices[pair_idx].x;
+					const uint	 fid = ef_indices[pair_idx].y;
+					const float3 raw_lg = compute_local_gradient(eid,
+						fid,
+						ef_list[pair_idx],
+						host_mesh_data->edge_adj_faces_ext,
+						host_mesh_data->sa_edges,
+						host_mesh_data->sa_faces,
+						sa_x);
+					const float	 raw_len_sq = luisa::dot(raw_lg, raw_lg);
+					if (!(raw_len_sq > 1e-12f) || !std::isfinite(raw_len_sq))
+						continue;
+					const float3 lg = raw_lg / std::sqrt(raw_len_sq + 1.0f);
+					const bool	 inverse = (ef_pair_mesh_index[pair_idx] != ref_mesh_idx);
+					accum_grad += inverse ? -lg : lg;
+				}
+				const float g_norm_sq = luisa::dot(accum_grad, accum_grad);
+				if (!(g_norm_sq > 1e-12f) || !std::isfinite(g_norm_sq))
+					continue;
+
+				const float	 char_len = std::max(total_contour_len, 1e-3f);
+				const float	 step_mag = std::min(safe_step_cap, 0.5f * char_len + response_margin);
+				const float3 contour_grad = (accum_grad / std::sqrt(g_norm_sq)) * step_mag;
+				const float	 eff_area = std::max(char_len * char_len / static_cast<float>(n_real_pairs), response_area_floor);
+				const float	 stiff = eff_area * response_stiffness;
+
+				gia_has_active_ef_response = true;
+				for (const uint pair_idx : contour)
+				{
+					if (ef_list[pair_idx].get_is_loop_vertex())
+						continue;
+					auto&	   pair = ef_list[pair_idx];
+					const bool inverse = (ef_pair_mesh_index[pair_idx] != ref_mesh_idx);
+					pair.set_stiffness(stiff);
+					// compute_local_gradient points in descent direction (+cgB), so negate for unified (-stiff * w * grad) convention.
+					pair.set_gradient(inverse ? contour_grad : -contour_grad);
+				}
 			}
 		}
 	}
 
-	// Finalize EF gradients for deferred host/device assembly
-	gia_has_active_ef_response = (num_pairs > 0u);
-	CpuParallel::parallel_for(0,
-		num_pairs,
-		[&](const uint pair_idx)
-		{
-			auto&		 pair = ef_list[pair_idx];
-			const float3 orig_grad = pair.get_gradient();
-			const float	 grad_norm_sqr = luisa::dot(orig_grad, orig_grad);
-			if (!(grad_norm_sqr >= 1e-12f) || luisa::isinf(grad_norm_sqr) || luisa::isnan(grad_norm_sqr))
-			{
-				pair.set_stiffness(0.0f);
-				pair.set_gradient(luisa::make_float3(0.0f, 1.0f, 0.0f));
-			}
-		});
+	// Upload VF attraction pairs into narrow_phase_list (automatically handled on both CPU and GPU PCG paths).
+	if (!target_pairs.empty())
+	{
+		host_untangling_data->target_point_template_pairs = std::move(target_pairs);
+		host_untangling_data->target_point_template_pairs_indices = std::move(target_indices);
+		upload_response_pairs_to_gpu(device, stream, host_untangling_data, host_collision_data, device_collision_data);
+	}
 }
 
 void IntersectionResolver::host_assemble_ef_response(Stream& stream, std::vector<float3>& sa_cgB, std::vector<float3x3>& sa_cgA_diag)
@@ -2424,8 +2642,7 @@ void IntersectionResolver::host_resolve(Device& device, Stream& stream)
 			host_identify_contour_type(device, stream);
 			host_identify_region(device, stream);
 			host_flood_filling(device, stream);
-			if (get_scene_params().GIA_use_EF_response)
-				host_resolve_GIA(device, stream);
+			host_resolve_GIA(device, stream);
 		}
 	}
 
