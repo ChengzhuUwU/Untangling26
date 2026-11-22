@@ -2254,6 +2254,7 @@ namespace lcs
 			if (get_scene_params().use_untangling)
 			{
 				intersection_resolver->host_resolve(device, stream);
+				intersection_resolver->host_assemble_ef_response(stream, host_sim_data->sa_cgB, host_sim_data->sa_cgA_diag);
 				intersection_resolver->filter_invalid_pairs(stream);
 			}
 
@@ -2514,6 +2515,7 @@ namespace lcs
 			if (get_scene_params().use_untangling)
 			{
 				intersection_resolver->host_resolve(device, stream);
+				intersection_resolver->device_assemble_ef_response(stream, sim_data->sa_cgB, sim_data->sa_cgA_diag);
 				intersection_resolver->filter_invalid_pairs(stream);
 			}
 

@@ -1988,10 +1988,9 @@ void IntersectionResolver::host_resolve_ICM(Device& device, Stream& stream)
 		contour_gradient = scale_gradient(contour_gradient);
 	}
 
-	// Apply force
+	// Finalize stored ICM gradients using unified EF convention: cgB += -stiff * weights[ii] * orig_grad.
+	// Assembly into cgB / cgA_diag is deferred to host_assemble_ef_response / device_assemble_ef_response.
 	{
-		auto& cgB = host_sim_data->sa_cgB;
-		auto& cgA_diag = host_sim_data->sa_cgA_diag;
 		CpuParallel::parallel_for(0,
 			num_pairs,
 			[&](const uint pair_idx)
@@ -2002,34 +2001,19 @@ void IntersectionResolver::host_resolve_ICM(Device& device, Stream& stream)
 				if (get_scene_params().accumulate_ICM_correction)
 					pair.set_gradient(contour_gradients[contour_idx]);
 
+				// Negate relative to old (+stiff * w * grad) convention so unified (-stiff * w * grad) produces identical force.
 				const bool use_inverse = fn_need_inverse_grad(pair_idx);
-				if (use_inverse)
+				if (!use_inverse)
 				{
 					pair.flip_gradient();
 				}
 
 				const float3 orig_grad = pair.get_gradient();
-				float3		 normal = luisa::normalize(orig_grad);
-				if (dot(orig_grad, orig_grad) < 1e-12f)
+				const float	 grad_norm_sqr = luisa::dot(orig_grad, orig_grad);
+				if (!(grad_norm_sqr >= 1e-12f) || luisa::isinf(grad_norm_sqr) || luisa::isnan(grad_norm_sqr))
 				{
 					pair.set_stiffness(0.0f);
-					normal = luisa::make_float3(0, 0, 0);
-					pair.set_gradient(luisa::make_float3(0, 1, 0));
-				}
-
-				const float stiff = pair.get_stiffness();
-				const auto	indices = pair.get_indices();
-				const auto	weights = pair.get_weights();
-				for (uint ii = 0; ii < 5; ii++)
-				{
-					if (luisa::isnan(stiff) || std::isnan(normal.x) || std::isnan(normal.y) || std::isnan(normal.z))
-					{
-						LUISA_ERROR("ICM gradient exists NAN");
-					}
-					atomic_add(cgB, stiff * weights[ii] * orig_grad, indices[ii]);
-					atomic_add(cgA_diag,
-						stiff * weights[ii] * weights[ii] * outer_product(normal, normal),
-						indices[ii]);
+					pair.set_gradient(luisa::make_float3(0.0f, 1.0f, 0.0f));
 				}
 			});
 	}
@@ -2180,61 +2164,84 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 		}
 	}
 
-	// Apply force
-	{
-		auto& cgB = host_sim_data->sa_cgB;
-		auto& cgA_diag = host_sim_data->sa_cgA_diag;
-		CpuParallel::parallel_for(0,
-			num_pairs,
-			[&](const uint pair_idx)
+	// Finalize EF gradients for deferred host/device assembly
+	gia_has_active_ef_response = (num_pairs > 0u);
+	CpuParallel::parallel_for(0,
+		num_pairs,
+		[&](const uint pair_idx)
+		{
+			auto&		 pair = ef_list[pair_idx];
+			const float3 orig_grad = pair.get_gradient();
+			const float	 grad_norm_sqr = luisa::dot(orig_grad, orig_grad);
+			if (!(grad_norm_sqr >= 1e-12f) || luisa::isinf(grad_norm_sqr) || luisa::isnan(grad_norm_sqr))
 			{
-				auto& pair = ef_list[pair_idx];
+				pair.set_stiffness(0.0f);
+				pair.set_gradient(luisa::make_float3(0.0f, 1.0f, 0.0f));
+			}
+		});
+}
 
-				const float3 orig_grad = pair.get_gradient();
-				const float	 grad_norm_sqr = luisa::dot(orig_grad, orig_grad);
-				float3		 normal = luisa::make_float3(0.0f);
-				if (!(grad_norm_sqr >= 1e-12f) || luisa::isinf(grad_norm_sqr))
-				{
-					pair.set_stiffness(0.0f);
-					pair.set_gradient(luisa::make_float3(0, 1, 0));
-				}
-				else
-				{
-					normal = orig_grad / luisa::sqrt(grad_norm_sqr);
-				}
+void IntersectionResolver::host_assemble_ef_response(Stream& stream, std::vector<float3>& sa_cgB, std::vector<float3x3>& sa_cgA_diag)
+{
+	const bool has_ef_response = get_scene_params().use_untangling_ICM
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response);
+	const uint num_pairs = host_collision_data->narrow_phase_collision_count[1];
+	if (!has_ef_response || num_pairs == 0u)
+		return;
 
-				const float stiff = pair.get_stiffness();
-				const auto	indices = pair.get_indices();
-				const auto	weights = pair.get_weights();
-				for (uint ii = 0; ii < 5; ii++)
-				{
-					if (luisa::isnan(stiff) || luisa::isinf(stiff) || std::isnan(normal.x) || std::isnan(normal.y) || std::isnan(normal.z))
-					{
-						LUISA_ERROR("GIA-ICM gradient exists NAN");
-					}
-					atomic_add(cgB, -stiff * weights[ii] * orig_grad, indices[ii]);
-					atomic_add(cgA_diag,
-						stiff * weights[ii] * weights[ii] * outer_product(normal, normal),
-						indices[ii]);
-				}
-			});
-	}
+	const auto& ef_list = host_collision_data->narrow_phase_list_ef;
+	CpuParallel::parallel_for(0u,
+		num_pairs,
+		[&](const uint pair_idx)
+		{
+			const auto&	 pair = ef_list[pair_idx];
+			const float	 stiff = pair.get_stiffness();
+			const float3 orig_grad = pair.get_gradient();
+			const float	 grad_norm_sqr = luisa::dot(orig_grad, orig_grad);
+			if (!(stiff > 0.0f) || !(grad_norm_sqr > 1e-12f) || luisa::isnan(stiff) || luisa::isinf(stiff))
+				return;
+
+			const float3   normal = orig_grad / std::sqrt(grad_norm_sqr);
+			const float3x3 hess = stiff * outer_product(normal, normal);
+			const auto	   indices = pair.get_indices();
+			const auto	   weights = pair.get_weights();
+			for (uint ii = 0u; ii < 5u; ++ii)
+			{
+				atomic_add(sa_cgB, -stiff * weights[ii] * orig_grad, indices[ii]);
+				atomic_add(sa_cgA_diag, (weights[ii] * weights[ii]) * hess, indices[ii]);
+			}
+		});
+}
+
+void IntersectionResolver::device_assemble_ef_response(Stream& stream, Buffer<float3>& sa_cgB, Buffer<float3x3>& sa_cgA_diag)
+{
+	const bool has_ef_response = get_scene_params().use_untangling_ICM
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response);
+	const uint num_pairs = host_collision_data->narrow_phase_collision_count[1];
+	if (!has_ef_response || num_pairs == 0u)
+		return;
+
+	stream << fn_assemble_ICM(get_collision_data(), sa_cgB, sa_cgA_diag).dispatch(num_pairs);
 }
 
 void IntersectionResolver::host_spmv_ICM(Stream& stream, const std::vector<float3>& input_ptr, std::vector<float3>& output_ptr)
 {
 	auto&	   host_count = host_collision_data->narrow_phase_collision_count;
 	const uint num_pairs = host_count[1];
+	if (num_pairs == 0u)
+		return;
 
 	CpuParallel::parallel_for(0,
 		num_pairs,
 		[&](const uint pair_idx)
 		{
 			const auto&	 ef_pair = host_collision_data->narrow_phase_list_ef[pair_idx];
+			const float	 stiff = ef_pair.get_stiffness();
 			const float3 grad = ef_pair.get_gradient();
 			const float	 len_sqr = luisa::dot(grad, grad);
-			const float3 normal = len_sqr > 1e-12f ? grad / luisa::sqrt(len_sqr) : luisa::make_float3(0.0f);
-			const float	 stiff = ef_pair.get_stiffness();
+			if (!(stiff > 0.0f) || !(len_sqr > 1e-12f))
+				return;
+			const float3 normal = grad / luisa::sqrt(len_sqr);
 
 			const auto indices = ef_pair.get_indices();
 			const auto weights = ef_pair.get_weights();
@@ -2273,7 +2280,8 @@ void IntersectionResolver::host_spmv_ICM(Stream& stream, const std::vector<float
 
 void IntersectionResolver::host_spmv(Stream& stream, const std::vector<float3>& input_ptr, std::vector<float3>& output_ptr)
 {
-	if (get_scene_params().use_untangling_ICM || (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response))
+	if (get_scene_params().use_untangling_ICM
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response))
 	{
 		host_spmv_ICM(stream, input_ptr, output_ptr);
 	}
@@ -2283,12 +2291,15 @@ void IntersectionResolver::device_spmv_ICM(Stream& stream, const Buffer<float3>&
 {
 	auto&	   host_count = host_collision_data->narrow_phase_collision_count;
 	const uint num_pairs = host_count[1];
+	if (num_pairs == 0u)
+		return;
 	stream << fn_spmv_ICM(get_collision_data(), input_ptr, output_ptr).dispatch(num_pairs);
 }
 
 void IntersectionResolver::device_spmv(Stream& stream, const Buffer<float3>& input_ptr, Buffer<float3>& output_ptr)
 {
-	if (get_scene_params().use_untangling_ICM || (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response))
+	if (get_scene_params().use_untangling_ICM
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response))
 	{
 		device_spmv_ICM(stream, input_ptr, output_ptr);
 	}
@@ -2349,6 +2360,7 @@ void IntersectionResolver::host_clear(Device& device, Stream& stream)
 	host_untangling_data->face_region_indices_csr.clear();
 	gia_invalid_region_pair.clear();
 	gia_contour_pierced_faces.clear();
+	gia_has_active_ef_response = false;
 }
 
 void IntersectionResolver::host_resolve(Device& device, Stream& stream)
@@ -2762,11 +2774,14 @@ namespace lcs
 			{
 				const Uint	 pair_idx = dispatch_x();
 				const auto	 ef_pair = collision_data.narrow_phase_list_ef.read(pair_idx);
-				const Float2 edge_bary = ef_pair->get_edge_bary();
-				const Float3 face_bary = ef_pair->get_face_bary();
 				const Float3 grad = ef_pair->get_gradient();
-				const Float3 normal = normalize(grad);
 				const Float	 stiff = ef_pair->get_stiffness();
+				const Float	 len_sqr = dot(grad, grad);
+				$if(stiff <= 0.0f | len_sqr <= 1e-12f)
+				{
+					$return();
+				};
+				const Float3 normal = grad / sqrt(len_sqr);
 
 				const auto indices = ef_pair->get_indices();
 				const auto weights = ef_pair->get_weights();
@@ -2800,6 +2815,42 @@ namespace lcs
 					output_ptr.atomic(indices[ii])[0].fetch_add(output_vec[ii][0]);
 					output_ptr.atomic(indices[ii])[1].fetch_add(output_vec[ii][1]);
 					output_ptr.atomic(indices[ii])[2].fetch_add(output_vec[ii][2]);
+				}
+			});
+
+		compiler.compile<1>(fn_assemble_ICM,
+			[](Var<CDBG> collision_data, BufferVar<float3> sa_cgB, BufferVar<float3x3> sa_cgA_diag)
+			{
+				const Uint	 pair_idx = dispatch_x();
+				const auto	 ef_pair = collision_data.narrow_phase_list_ef.read(pair_idx);
+				const Float	 stiff = ef_pair->get_stiffness();
+				const Float3 orig_grad = ef_pair->get_gradient();
+				const Float	 len_sqr = dot(orig_grad, orig_grad);
+				$if(stiff <= 0.0f | len_sqr <= 1e-12f)
+				{
+					$return();
+				};
+				const Float3   normal = orig_grad / sqrt(len_sqr);
+				const auto	   indices = ef_pair->get_indices();
+				const auto	   weights = ef_pair->get_weights();
+				const Float3x3 hess = stiff * outer_product(normal, normal);
+				for (uint ii = 0; ii < 5; ii++)
+				{
+					const Float3   rhs = -stiff * weights[ii] * orig_grad;
+					const Float3x3 diag_block = (weights[ii] * weights[ii]) * hess;
+					const Uint	   vid = indices[ii];
+					sa_cgB.atomic(vid)[0].fetch_add(rhs[0]);
+					sa_cgB.atomic(vid)[1].fetch_add(rhs[1]);
+					sa_cgB.atomic(vid)[2].fetch_add(rhs[2]);
+					sa_cgA_diag.atomic(vid)[0][0].fetch_add(diag_block[0][0]);
+					sa_cgA_diag.atomic(vid)[0][1].fetch_add(diag_block[0][1]);
+					sa_cgA_diag.atomic(vid)[0][2].fetch_add(diag_block[0][2]);
+					sa_cgA_diag.atomic(vid)[1][0].fetch_add(diag_block[1][0]);
+					sa_cgA_diag.atomic(vid)[1][1].fetch_add(diag_block[1][1]);
+					sa_cgA_diag.atomic(vid)[1][2].fetch_add(diag_block[1][2]);
+					sa_cgA_diag.atomic(vid)[2][0].fetch_add(diag_block[2][0]);
+					sa_cgA_diag.atomic(vid)[2][1].fetch_add(diag_block[2][1]);
+					sa_cgA_diag.atomic(vid)[2][2].fetch_add(diag_block[2][2]);
 				}
 			});
 	}

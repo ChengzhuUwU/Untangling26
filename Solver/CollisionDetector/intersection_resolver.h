@@ -64,6 +64,8 @@ namespace lcs
 		void device_resolve_PRP(Device& device, Stream& stream);
 
 	public:
+		void host_assemble_ef_response(Stream& stream, std::vector<float3>& sa_cgB, std::vector<float3x3>& sa_cgA_diag);
+		void device_assemble_ef_response(Stream& stream, Buffer<float3>& sa_cgB, Buffer<float3x3>& sa_cgA_diag);
 		void host_spmv(Stream& stream, const std::vector<float3>& input_ptr, std::vector<float3>& output_ptr);
 		void host_spmv_ICM(Stream& stream, const std::vector<float3>& input_ptr, std::vector<float3>& output_ptr);
 		void device_spmv(Stream& stream, const Buffer<float3>& input_ptr, Buffer<float3>& output_ptr);
@@ -95,6 +97,7 @@ namespace lcs
 		float												 gia_cached_avg_edge_len = 0.0f;
 		uint												 gia_cached_num_edges = 0u;
 		float												 gia_last_perturb_eps = 0.0f;
+		bool												 gia_has_active_ef_response = false;
 		std::vector<int>									 gia_face_orient;
 		std::vector<float3>									 gia_face_normals;
 		std::vector<uint2>									 gia_invalid_region_pair;
@@ -213,6 +216,12 @@ namespace lcs
 			Buffer<float3>,
 			Buffer<float3>>
 			fn_spmv_ICM;
+
+		luisa::compute::Shader<1,
+			lcs::CollisionData<luisa::compute::Buffer>,
+			Buffer<float3>,
+			Buffer<float3x3>>
+			fn_assemble_ICM;
 	};
 
 } // namespace lcs
