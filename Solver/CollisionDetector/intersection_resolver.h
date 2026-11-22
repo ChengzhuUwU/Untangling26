@@ -91,6 +91,11 @@ namespace lcs
 		LbvhData<luisa::compute::Buffer>*		lbvh_data_face = nullptr;
 		LbvhData<luisa::compute::Buffer>*		lbvh_data_edge = nullptr;
 
+		// GIA host-side working state (populated per step in GIA mode)
+		float									gia_cached_avg_edge_len = 0.0f;
+		uint									gia_cached_num_edges = 0u;
+		float									gia_last_perturb_eps = 0.0f;
+
 	public:
 		void set_collision_data(CollisionData<luisa::compute::Buffer>* collision_data,
 			CollisionData<std::vector>*								   host_collision_data,
@@ -148,7 +153,8 @@ namespace lcs
 			Buffer<uint3>,
 			Buffer<float>,
 			Buffer<float>,
-			unsigned int>
+			unsigned int,
+			float>
 			fn_narrow_phase_ef_dcd_query;
 
 		luisa::compute::Shader<1,

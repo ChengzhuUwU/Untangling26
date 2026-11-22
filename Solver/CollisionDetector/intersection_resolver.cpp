@@ -100,7 +100,8 @@ namespace lcs // Intersection Detection
 				const BufferVar<uint3>			 face_adj_edges,
 				const BufferVar<float>			 d_hat,
 				const BufferVar<float>			 thickness,
-				const Uint						 max_pairs)
+				const Uint						 max_pairs,
+				const Float						 perturb_eps)
 			{
 				const Uint pair_idx = dispatch_id().x;
 
@@ -146,39 +147,141 @@ namespace lcs // Intersection Detection
 					sa_x.read(face.z),
 				};
 
-				Float3 face_bary;
-				Float  out_time;
-				Bool   intersect = distance::LineIntersection(e0, e1, ABC[0], ABC[1], ABC[2], face_bary, out_time);
+				auto hash_coord = [](const Uint& vid, const uint seed) -> Float
+				{
+					Uint x = (vid ^ seed) * 0x27d4eb2du;
+					x = x ^ (x >> 15u);
+					x = x * 0x85ebca6bu;
+					x = x ^ (x >> 13u);
+					const Float sgn = ite((x & 1u) != 0u, 1.0f, -1.0f);
+					const Float mag = 0.35f + 0.65f * (cast<float>(x >> 1u) * (1.0f / 2147483647.0f));
+					return sgn * mag;
+				};
+				auto perturb_pos = [&](const Float3& p, const Uint& vid) -> Float3
+				{
+					return p + make_float3(
+						hash_coord(vid, 0x9e3779b9u),
+						hash_coord(vid, 0x7f4a7c15u),
+						hash_coord(vid, 0x6a09e667u)) * perturb_eps;
+				};
+				auto watertight_ef_query = [](const Float3& p0,
+											   const Float3& p1,
+											   const Uint	 va,
+											   const Uint	 vb,
+											   const Uint	 vc,
+											   const Float3& a,
+											   const Float3& b,
+											   const Float3& c,
+											   Float3&		 out_bary,
+											   Float&		 out_t) -> Bool
+				{
+					// Canonical Plucker edge-volume test:
+					// Adjacent triangles sharing an edge {lo, hi} evaluate bit-identical signed volume
+					// with opposite signs and mutually exclusive tie-break, preventing 1-ULP cracks and double hits.
+					Bool		 hit = false;
+					const Float3 dir = p1 - p0;
+					const Float3 n_tri = cross(b - a, c - a);
+					const Float	 n_len = length(n_tri);
+					const Float	 d_len = length(dir);
+					const Float	 d0 = dot(p0 - a, n_tri);
+					const Float	 d1 = dot(p1 - a, n_tri);
+					const Float	 denom = d0 - d1;
+					const Bool	 crosses_plane = ((d0 > 0.0f) & (d1 < 0.0f)) | ((d0 < 0.0f) & (d1 > 0.0f));
+
+					$if(crosses_plane & (abs(denom) > 1e-12f * max(n_len * d_len, 1e-12f)))
+					{
+						auto edge_side = [&](const Uint u_id, const Uint v_id, const Float3& pu, const Float3& pv, Float& out_s, Bool& out_pos, Bool& out_neg)
+						{
+							const Bool	 fwd = u_id < v_id;
+							const Float3 p_lo = ite(fwd, pu, pv);
+							const Float3 p_hi = ite(fwd, pv, pu);
+							const Float	 vol = dot(cross(p0 - p_lo, p1 - p_lo), p_hi - p_lo);
+							out_s = ite(fwd, vol, -vol);
+							out_pos = (out_s > 0.0f) | ((out_s == 0.0f) & fwd);
+							out_neg = (out_s < 0.0f) | ((out_s == 0.0f) & (!fwd));
+						};
+
+						Float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f;
+						Bool  pos0 = false, neg0 = false;
+						Bool  pos1 = false, neg1 = false;
+						Bool  pos2 = false, neg2 = false;
+						edge_side(va, vb, a, b, s0, pos0, neg0); // opposite vc
+						edge_side(vb, vc, b, c, s1, pos1, neg1); // opposite va
+						edge_side(vc, va, c, a, s2, pos2, neg2); // opposite vb
+
+						$if((pos0 & pos1 & pos2) | (neg0 & neg1 & neg2))
+						{
+							const Float t = d0 / denom;
+							out_t = clamp(t, 1e-5f, 1.0f - 1e-5f);
+							const Float w_sum = s0 + s1 + s2;
+							$if(abs(w_sum) > 1e-20f)
+							{
+								const Float wa = clamp(s1 / w_sum, 0.0f, 1.0f);
+								const Float wb = clamp(s2 / w_sum, 0.0f, 1.0f);
+								const Float wc = clamp(1.0f - wa - wb, 0.0f, 1.0f);
+								out_bary = make_float3(wa, wb, wc);
+							}
+							$else
+							{
+								out_bary = make_float3(1.0f / 3.0f);
+							};
+							hit = true;
+						};
+					};
+					return hit;
+				};
+
+				Float3 face_bary = make_float3(0.0f);
+				Float  out_time = 0.0f;
+				Bool   intersect = false;
+
+				$if(perturb_eps > 0.0f)
+				{
+					const Float3 e0_p = perturb_pos(e0, edge.x);
+					const Float3 e1_p = perturb_pos(e1, edge.y);
+					const Float3 a_p = perturb_pos(ABC[0], face.x);
+					const Float3 b_p = perturb_pos(ABC[1], face.y);
+					const Float3 c_p = perturb_pos(ABC[2], face.z);
+					intersect = watertight_ef_query(e0_p, e1_p, face.x, face.y, face.z, a_p, b_p, c_p, face_bary, out_time);
+				}
+				$else
+				{
+					intersect = distance::LineIntersection(e0, e1, ABC[0], ABC[1], ABC[2], face_bary, out_time);
+					$if(intersect)
+					{
+						// Suppress grazing EF contacts using normalized penetration, face barycentric, and edge-parameter thresholds.
+						constexpr float k_pen_rel_eps = 1e-4f;
+						constexpr float k_bary_eps = 1e-4f;
+						constexpr float k_t_eps = 1e-4f;
+
+						const Float3 N_un = luisa::compute::cross(ABC[1] - ABC[0], ABC[2] - ABC[0]);
+						const Float	 N_len = luisa::compute::length(N_un);
+						const Float	 face_char = luisa::compute::sqrt(luisa::compute::max(N_len, 1e-30f));
+						const Float3 N = N_un / luisa::compute::max(N_len, 1e-30f);
+						const Float	 d0 = luisa::compute::dot(e0 - ABC[0], N);
+						const Float	 d1 = luisa::compute::dot(e1 - ABC[0], N);
+						const Float	 pen = luisa::compute::min(luisa::compute::abs(d0), luisa::compute::abs(d1));
+						$if(pen < k_pen_rel_eps * face_char)
+						{
+							intersect = false;
+						};
+
+						const Float bary_min = luisa::compute::min(luisa::compute::min(face_bary.x, face_bary.y), face_bary.z);
+						$if(bary_min < k_bary_eps)
+						{
+							intersect = false;
+						};
+
+						const Float t_min = luisa::compute::min(out_time, 1.0f - out_time);
+						$if(t_min < k_t_eps)
+						{
+							intersect = false;
+						};
+					};
+				};
+
 				$if(intersect)
 				{
-					// Suppress grazing EF contacts using normalized penetration, face barycentric, and edge-parameter thresholds.
-					constexpr float k_pen_rel_eps = 1e-4f;
-					constexpr float k_bary_eps = 1e-4f;
-					constexpr float k_t_eps = 1e-4f;
-
-					const Float3 N_un = luisa::compute::cross(ABC[1] - ABC[0], ABC[2] - ABC[0]);
-					const Float	 N_len = luisa::compute::length(N_un);
-					const Float	 face_char = luisa::compute::sqrt(luisa::compute::max(N_len, 1e-30f));
-					const Float3 N = N_un / luisa::compute::max(N_len, 1e-30f);
-					const Float	 d0 = luisa::compute::dot(e0 - ABC[0], N);
-					const Float	 d1 = luisa::compute::dot(e1 - ABC[0], N);
-					const Float	 pen = luisa::compute::min(luisa::compute::abs(d0), luisa::compute::abs(d1));
-					$if(pen < k_pen_rel_eps * face_char)
-					{
-						$return();
-					};
-
-					const Float bary_min = luisa::compute::min(luisa::compute::min(face_bary.x, face_bary.y), face_bary.z);
-					$if(bary_min < k_bary_eps)
-					{
-						$return();
-					};
-
-					const Float t_min = luisa::compute::min(out_time, 1.0f - out_time);
-					$if(t_min < k_t_eps)
-					{
-						$return();
-					};
 
 					Float2 edge_bary = { 1.0f - out_time, out_time };
 
@@ -290,12 +393,12 @@ namespace lcs // Intersection Detection
 								{
 									$if(face[ii] == edge_2.x)
 									{
-										face_bary[ii] = edge1_bary.x;
+										face_bary[ii] = edge2_bary.x;
 										matched_vert_count += 1u;
 									}
 									$elif(face[ii] == edge_2.y)
 									{
-										face_bary[ii] = edge1_bary.y;
+										face_bary[ii] = edge2_bary.y;
 										matched_vert_count += 1u;
 									};
 								}
@@ -380,6 +483,26 @@ namespace lcs // Intersection Detection
 		const uint	num_broadphase_ee = host_count[host_collision_data->get_ee_count_offset()];
 		const uint	num_broadphase_ef = host_count[host_collision_data->get_ef_count_offset()];
 
+		// Compute deterministic symbolic-perturbation epsilon for GIA mode (0 for PRP/ICM to preserve exact baseline behavior).
+		float perturb_eps = 0.0f;
+		if (get_scene_params().use_untangling_GIA)
+		{
+			if (host_mesh_data != nullptr && host_mesh_data->num_edges > 0u
+				&& (gia_cached_num_edges != host_mesh_data->num_edges || gia_cached_avg_edge_len <= 0.0f))
+			{
+				double sum_len = 0.0;
+				for (uint eid = 0u; eid < host_mesh_data->num_edges; ++eid)
+				{
+					const uint2 e = host_mesh_data->sa_edges[eid];
+					sum_len += static_cast<double>(luisa::length(host_mesh_data->sa_rest_x[e.y] - host_mesh_data->sa_rest_x[e.x]));
+				}
+				gia_cached_avg_edge_len = static_cast<float>(sum_len / static_cast<double>(host_mesh_data->num_edges));
+				gia_cached_num_edges = host_mesh_data->num_edges;
+			}
+			perturb_eps = std::clamp(2e-4f * gia_cached_avg_edge_len, 1e-5f, 1e-4f);
+		}
+		gia_last_perturb_eps = perturb_eps;
+
 		// host_mesh_data->face_adj_edges
 		stream << fn_reset_uint(device_collision_data->vert_is_invalid)
 					  .dispatch(device_collision_data->vert_is_invalid.size());
@@ -398,7 +521,8 @@ namespace lcs // Intersection Detection
 			device_mesh_data->face_adj_edges,
 			d_hat,
 			thickness,
-			get_collision_data().narrow_phase_list_ef.size())
+			get_collision_data().narrow_phase_list_ef.size(),
+			perturb_eps)
 					  .dispatch(num_broadphase_ef);
 
 		if (!get_scene_params().ignore_near_zero_dist_pairs)
@@ -690,8 +814,7 @@ namespace lcs // Contour preprocessing
 		std::vector<CollisionPair::EfPair> ef_list(host_collision_data->narrow_phase_list_ef.begin(),
 			host_collision_data->narrow_phase_list_ef.begin() + num_pairs);
 
-		// Keep a deterministic edge/face ordering for contour construction (unless GIA is active).
-		if (!get_scene_params().use_untangling_GIA)
+		// Always keep a deterministic edge/face ordering for contour construction (including GIA).
 		{
 			std::vector<uint2>				   tmp_ef_indices(ef_indices.begin(), ef_indices.end());
 			std::vector<CollisionPair::EfPair> tmp_ef_list(ef_list.begin(), ef_list.end());
@@ -1110,17 +1233,24 @@ ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj
 	std::vector<uint>		  contour_boundary_pairs;
 	std::vector<uint>		  contour_loop_pairs;
 	std::vector<luisa::ubyte> contour_loop_pairs_is_boundary;
+	bool					  is_closed = !contour.empty();
 
 	for (const uint pair_idx : intersection_contours[contour_idx])
 	{
 		if (is_loop_vertex(pair_idx))
 		{
 			contour_loop_pairs.push_back(pair_idx);
-			contour_loop_pairs_is_boundary.push_back(pair_is_boundary[pair_idx] != 0);
+			contour_loop_pairs_is_boundary.push_back(0u);
+			continue;
 		}
 		if (pair_is_boundary[pair_idx] != 0)
 		{
 			contour_boundary_pairs.push_back(pair_idx);
+			is_closed = false;
+		}
+		else if (pair_adj_pairs[pair_idx].size() < 2u)
+		{
+			is_closed = false;
 		}
 	}
 
@@ -1128,14 +1258,21 @@ ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj
 
 	if (contour_boundary_pairs.empty())
 	{
-		if (contour_loop_pairs.empty())
-			contour_type = ContourType::Closed;
-		else if (contour_loop_pairs.size() == 1)
-			contour_type = ContourType::Eight;
-		else if (contour_loop_pairs.size() == 2)
-			contour_type = ContourType::LL;
+		if (is_closed)
+		{
+			if (contour_loop_pairs.empty())
+				contour_type = ContourType::Closed;
+			else if (contour_loop_pairs.size() == 1)
+				contour_type = ContourType::Eight;
+			else if (contour_loop_pairs.size() == 2)
+				contour_type = ContourType::LL;
+			else
+				contour_type = ContourType::Undifined;
+		}
 		else
+		{
 			contour_type = ContourType::Undifined;
+		}
 	}
 	else
 	{
@@ -1177,7 +1314,11 @@ ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj
 		case ContourType::Cross:
 		{
 			const uint front_mesh_idx = ef_pair_mesh_index[contour_boundary_pairs.front()];
-			mesh_is_closed = (front_mesh_idx == 0) ? std::array<bool, 2>{ true, false } : std::array<bool, 2>{ false, true };
+			const uint back_mesh_idx = ef_pair_mesh_index[contour_boundary_pairs.back()];
+			if (front_mesh_idx == back_mesh_idx)
+				mesh_is_closed = (front_mesh_idx == 0) ? std::array<bool, 2>{ true, false } : std::array<bool, 2>{ false, true };
+			else
+				mesh_is_closed = { false, false };
 			break;
 		}
 		case ContourType::BIBI:
@@ -1223,8 +1364,14 @@ void IntersectionResolver::host_identify_contour_type(Device& device, Stream& st
 		num_pairs,
 		[&](const uint pair_idx)
 		{
+			// Synthetic loop-vertex pairs must never be flagged as boundary edges.
+			if (pair_idx >= orig_num_pairs || host_collision_data->narrow_phase_list_ef[pair_idx].get_is_loop_vertex())
+			{
+				pair_is_boundary[pair_idx] = 0u;
+				return;
+			}
 			const uint eid = ef_indices[pair_idx].x;
-			pair_is_boundary[pair_idx] = host_mesh_data->edge_adj_faces_ext[eid].size() <= 1;
+			pair_is_boundary[pair_idx] = host_mesh_data->edge_adj_faces_ext[eid].size() <= 1 ? 1u : 0u;
 		});
 
 	if (host_untangling_data->num_contours.empty())
@@ -1238,7 +1385,6 @@ void IntersectionResolver::host_identify_contour_type(Device& device, Stream& st
 	{
 		auto contour_info = identify_contour_type(
 			ef_pair_adj_pairs_ext, pair_is_boundary, ef_pair_mesh_index, intersection_contours, orig_num_pairs, contour_idx);
-		const auto& contour = intersection_contours[contour_idx];
 		intersection_contours_info[contour_idx] = contour_info;
 	}
 
