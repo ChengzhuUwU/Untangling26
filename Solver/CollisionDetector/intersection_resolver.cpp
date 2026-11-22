@@ -1218,6 +1218,27 @@ CpuParallel::parallel_for(0,
 host_untangling_data->ef_pair_length = ef_pair_length;
 }
 
+	float gia_host_hash_coord(const uint vid, const uint seed) noexcept
+	{
+		uint x = (vid ^ seed) * 0x27d4eb2du;
+		x = x ^ (x >> 15u);
+		x = x * 0x85ebca6bu;
+		x = x ^ (x >> 13u);
+		const float sgn = ((x & 1u) != 0u) ? 1.0f : -1.0f;
+		const float mag = 0.35f + 0.65f * (static_cast<float>(x >> 1u) * (1.0f / 2147483647.0f));
+		return sgn * mag;
+	}
+
+	float3 gia_host_perturb_pos(const float3& p, const uint vid, const float eps) noexcept
+	{
+		if (eps <= 0.0f)
+			return p;
+		return p + luisa::make_float3(
+			gia_host_hash_coord(vid, 0x9e3779b9u),
+			gia_host_hash_coord(vid, 0x7f4a7c15u),
+			gia_host_hash_coord(vid, 0x6a09e667u)) * eps;
+	}
+
 ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj_pairs,
 	const std::vector<luisa::ubyte>&									pair_is_boundary,
 	const std::vector<uint>&											ef_pair_mesh_index,
@@ -1404,104 +1425,102 @@ void IntersectionResolver::host_identify_contour_type(Device& device, Stream& st
 
 void IntersectionResolver::host_identify_region(Device& device, Stream& stream)
 {
+	const auto& ef_list = host_collision_data->narrow_phase_list_ef;
 	const auto& ef_indices = host_collision_data->narrow_phase_list_ef_indices;
 	const auto& ef_pair_edge_mesh_idx = host_untangling_data->ef_pair_mesh_index;
+	const auto& ef_pair_contour_idx = host_untangling_data->ef_pair_contour_index;
 	const uint	num_pairs = host_collision_data->narrow_phase_collision_count[1];
+	const uint	num_faces = host_mesh_data->num_faces;
+	const auto& sa_faces = host_mesh_data->sa_faces;
+	const auto& sa_x = host_sim_data->sa_x;
 
-	std::vector<uint> sorted_get_original(num_pairs);
-	std::iota(sorted_get_original.begin(), sorted_get_original.end(), 0u);
-
-	std::vector<uint> ef_pair_edge_dir(num_pairs);
-	std::vector<uint> ef_pair_region_idx(num_pairs);
-
-	std::vector<uint2> extended_ef_edges(num_pairs);
-	for (uint sorted_idx = 0; sorted_idx < num_pairs; sorted_idx++)
+	// 1. Propagate globally consistent face winding orientation across edge-adjacent manifold faces.
+	gia_face_orient.assign(num_faces, 0);
+	auto has_directed_edge = [](const uint3& f, const uint u, const uint v) noexcept -> bool
 	{
-		const uint	pair_idx = sorted_get_original[sorted_idx];
-		const uint2 pair = ef_indices[pair_idx];
-		extended_ef_edges[pair_idx] = host_mesh_data->sa_edges[pair.x];
-	}
-
-	std::array<std::vector<uint>, 2> mesh_contains_pairs;
-	for (uint sorted_idx = 0; sorted_idx < num_pairs; sorted_idx++)
+		return (f.x == u && f.y == v) || (f.y == u && f.z == v) || (f.z == u && f.x == v);
+	};
+	std::queue<uint> face_queue;
+	for (uint f0 = 0u; f0 < num_faces; ++f0)
 	{
-		const uint pair_idx = sorted_get_original[sorted_idx];
-		const uint mesh_idx = ef_pair_edge_mesh_idx[pair_idx];
-		mesh_contains_pairs[mesh_idx].push_back(pair_idx);
-	}
-	for (uint mesh_idx = 0; mesh_idx < 2; mesh_idx++)
-	{
-		const std::vector<uint>& curr_set = mesh_contains_pairs[mesh_idx];
-		if (curr_set.empty())
+		if (gia_face_orient[f0] != 0)
 			continue;
-		CpuParallel::parallel_for_and_scan(
-			0,
-			curr_set.size(),
-			[&](const uint i)
+		gia_face_orient[f0] = 1;
+		face_queue.push(f0);
+		while (!face_queue.empty())
+		{
+			const uint	cf = face_queue.front();
+			face_queue.pop();
+			const uint3 f = sa_faces[cf];
+			const uint3 f_edges = host_mesh_data->face_adj_edges[cf];
+			for (uint k = 0u; k < 3u; ++k)
 			{
-				if (i == 0)
-					return 1u;
-				const uint	prev_pair_idx = curr_set[i - 1];
-				const uint	curr_pair_idx = curr_set[i];
-				const uint2 prev_edge = extended_ef_edges[prev_pair_idx];
-				const uint2 curr_edge = extended_ef_edges[curr_pair_idx];
-				const bool	same_dir = luisa::all(prev_edge == curr_edge) ? false
-																		  : curr_edge.x == prev_edge.x || curr_edge.y == prev_edge.y
-						|| curr_edge.x == curr_edge.y;
-				return same_dir ? 0u : 1u;
-			},
-			[&](const uint i, const uint scan_value, const uint curr_value)
-			{
-				const uint pair_idx = curr_set[i];
-				ef_pair_edge_dir[pair_idx] = scan_value % 2;
-			},
-			0u);
+				const uint	eid = f_edges[k];
+				const auto& adj_faces = host_mesh_data->edge_adj_faces_ext[eid];
+				if (adj_faces.size() != 2u)
+					continue;
+				const uint2 e = host_mesh_data->sa_edges[eid];
+				const bool	cf_has_xy = has_directed_edge(f, e.x, e.y);
+				for (const uint nf : adj_faces)
+				{
+					if (nf == cf || nf >= num_faces || gia_face_orient[nf] != 0)
+						continue;
+					const bool nf_has_xy = has_directed_edge(sa_faces[nf], e.x, e.y);
+					// Adjacent faces with consistent orientation traverse their shared edge in opposite directions.
+					gia_face_orient[nf] = (cf_has_xy == nf_has_xy) ? -gia_face_orient[cf] : gia_face_orient[cf];
+					face_queue.push(nf);
+				}
+			}
+		}
 	}
 
-	CpuParallel::parallel_for(0,
+	// 2. Compute oriented unit face normals (on unperturbed coordinates for response, and perturbed for sign consistency).
+	gia_face_normals.resize(num_faces, luisa::make_float3(0.0f));
+	CpuParallel::parallel_for(0u,
+		num_faces,
+		[&](const uint fid)
+		{
+			const uint3	 f = sa_faces[fid];
+			const float3 n = luisa::cross(sa_x[f.y] - sa_x[f.x], sa_x[f.z] - sa_x[f.x]);
+			const float	 len = luisa::length(n);
+			gia_face_normals[fid] = len > 1e-12f
+				? static_cast<float>(gia_face_orient[fid]) * (n / len)
+				: luisa::make_float3(0.0f);
+		});
+
+	// 3. Assign consistent side parity per EF pair using signed dot product against the consistently oriented pierced face normal.
+	std::vector<uint> ef_pair_region_idx(num_pairs, 0u);
+	const float		  eps = gia_last_perturb_eps;
+	CpuParallel::parallel_for(0u,
 		num_pairs,
 		[&](const uint pair_idx)
 		{
-			const uint contour_idx = host_untangling_data->ef_pair_contour_index[pair_idx];
+			const uint contour_idx = ef_pair_contour_idx[pair_idx];
 			const uint mesh_idx = ef_pair_edge_mesh_idx[pair_idx];
-			const uint edge_dir = ef_pair_edge_dir[pair_idx];
-			const uint region_idx = 4 * contour_idx + 2 * mesh_idx + edge_dir;
-			ef_pair_region_idx[pair_idx] = region_idx;
+			uint	   edge_dir = 0u;
+			if (!ef_list[pair_idx].get_is_loop_vertex())
+			{
+				const uint2	 edge = ef_list[pair_idx].get_edge();
+				const uint	 fid = ef_indices[pair_idx].y;
+				const uint3	 face = sa_faces[fid];
+				const float3 e0_p = gia_host_perturb_pos(sa_x[edge.x], edge.x, eps);
+				const float3 e1_p = gia_host_perturb_pos(sa_x[edge.y], edge.y, eps);
+				const float3 a_p = gia_host_perturb_pos(sa_x[face.x], face.x, eps);
+				const float3 b_p = gia_host_perturb_pos(sa_x[face.y], face.y, eps);
+				const float3 c_p = gia_host_perturb_pos(sa_x[face.z], face.z, eps);
+				float3		 n_p = luisa::cross(b_p - a_p, c_p - a_p);
+				const float	 n_len = luisa::length(n_p);
+				const float3 n_orient = n_len > 1e-12f
+					? static_cast<float>(gia_face_orient[fid]) * (n_p / n_len)
+					: gia_face_normals[fid];
+				// edge_dir == 0 => edge.x lies on the +n_orient side of the pierced face; edge.y on the -n_orient side.
+				const float signed_dot = luisa::dot(e0_p - e1_p, n_orient);
+				edge_dir = (signed_dot >= 0.0f) ? 0u : 1u;
+			}
+			ef_pair_region_idx[pair_idx] = 4u * contour_idx + 2u * mesh_idx + edge_dir;
 		});
 
-	host_untangling_data->ef_pair_region_index = ef_pair_region_idx;
-}
-
-inline bool contour_type_can_flood_fill(ContourType t) noexcept
-{
-	switch (t)
-	{
-		case ContourType::Closed:
-		case ContourType::Eight:
-		case ContourType::BBII:
-			return true;
-		case ContourType::BIBI:
-		case ContourType::Cross:
-		case ContourType::LL:
-		case ContourType::BLI:
-		case ContourType::Undifined:
-			return false;
-	}
-	return false;
-}
-
-inline bool contour_type_can_partial_flood_fill(ContourType t) noexcept
-{
-	switch (t)
-	{
-		case ContourType::Cross:
-		case ContourType::BIBI:
-		case ContourType::LL:
-		case ContourType::BLI:
-			return true;
-		default:
-			return false;
-	}
+	host_untangling_data->ef_pair_region_index = std::move(ef_pair_region_idx);
 }
 
 void IntersectionResolver::host_flood_filling(Device& device, Stream& stream)
@@ -1511,70 +1530,15 @@ void IntersectionResolver::host_flood_filling(Device& device, Stream& stream)
 	const auto& intersection_contours = host_untangling_data->intersection_contours;
 	const auto& intersection_contours_info = host_untangling_data->intersection_contours_info;
 	const auto& ef_pair_region_idx = host_untangling_data->ef_pair_region_index;
+	const auto& ef_pair_mesh_idx = host_untangling_data->ef_pair_mesh_index;
 
 	const uint num_pairs = host_collision_data->narrow_phase_collision_count[1];
-	const uint num_contours = intersection_contours.size();
-	const uint num_regions = num_contours * 4;
+	const uint num_contours = static_cast<uint>(intersection_contours.size());
+	const uint num_regions = num_contours * 4u;
 
 	const uint num_verts = host_mesh_data->num_verts;
 	const uint num_edges = host_mesh_data->num_edges;
 	const uint num_faces = host_mesh_data->num_faces;
-
-	std::vector<std::vector<uint>> edge_contains_pairs_list(num_edges);
-	for (uint pair_idx = 0; pair_idx < num_pairs; pair_idx++)
-	{
-		const uint eid = ef_indices[pair_idx].x;
-		edge_contains_pairs_list[eid].push_back(pair_idx);
-	}
-
-	std::vector<float3>& extended_verts = host_untangling_data->extended_positions;
-	std::vector<uint2>&	 extended_edges = host_untangling_data->extended_edges;
-	std::vector<uint2>&	 ef_pair_semented_indices = host_untangling_data->ef_pair_semented_indices;
-	{
-		extended_verts = host_sim_data->sa_x;
-		extended_edges = host_mesh_data->sa_edges;
-		ef_pair_semented_indices = ef_indices;
-
-		for (uint pair_idx = 0; pair_idx < num_pairs; pair_idx++)
-		{
-			auto		 pair = ef_list[pair_idx];
-			auto		 edge = pair.get_edge();
-			const float2 edge_bary = pair.get_edge_bary();
-			float3		 x0 = host_sim_data->sa_x[edge.x];
-			float3		 x1 = host_sim_data->sa_x[edge.y];
-			const float3 p = edge_bary[0] * x0 + edge_bary[1] * x1;
-			extended_verts.emplace_back(p);
-
-			ef_pair_semented_indices[pair_idx].x = extended_edges.size();
-			extended_edges.emplace_back(edge);
-		}
-
-		const uint prefix_vid = host_mesh_data->num_verts;
-		const uint prefix_eid = host_mesh_data->num_edges;
-		for (uint eid = 0; eid < host_mesh_data->num_edges; ++eid)
-		{
-			std::vector<uint>& contains_pairs = edge_contains_pairs_list[eid];
-			if (!contains_pairs.empty())
-			{
-				std::sort(contains_pairs.begin(),
-					contains_pairs.end(),
-					[&](const uint& a, const uint& b)
-					{ return ef_list[a].get_edge_bary().y < ef_list[b].get_edge_bary().y; });
-
-				for (uint i = 0; i < contains_pairs.size() - 1; i++)
-				{
-					const uint curr = contains_pairs[i];
-					const uint next = contains_pairs[i + 1];
-
-					const uint new_vid = extended_verts.size();
-					extended_verts.push_back(0.5f * (extended_verts[prefix_vid + curr] + extended_verts[prefix_vid + next]));
-
-					extended_edges[prefix_eid + curr].y = new_vid;
-					extended_edges[prefix_eid + next].x = new_vid;
-				}
-			}
-		}
-	}
 
 	std::vector<std::set<uint>>& region_contains_verts = host_untangling_data->region_contains_verts;
 	region_contains_verts.clear();
@@ -1582,256 +1546,366 @@ void IntersectionResolver::host_flood_filling(Device& device, Stream& stream)
 
 	std::vector<std::set<uint>>& region_contains_verts_1order = host_untangling_data->region_contains_verts_1order;
 	region_contains_verts_1order.clear();
+	region_contains_verts_1order.resize(num_regions);
 
-	std::vector<std::set<uint>> contour_loop_vertex_ids(num_contours);
-	for (uint c = 0; c < num_contours; ++c)
+	gia_invalid_region_pair.assign(num_contours, luisa::make_uint2(-1u, -1u));
+	gia_contour_pierced_faces.assign(num_contours, {});
+
+	std::vector<float> region_rest_area(num_regions, 0.0f);
+	std::vector<uint>  edge_cross_cnt(num_edges, 0u);
+	std::vector<uint>  touched_edges;
+	std::vector<int>   bfs_owner(num_verts, -1);
+	std::vector<uint>  bfs_touched_verts;
+
+	for (uint contour_idx = 0u; contour_idx < num_contours; ++contour_idx)
 	{
-		for (const uint lp_pair_idx : intersection_contours_info[c].loop_pairs)
+		const auto& contour = intersection_contours[contour_idx];
+		const auto& contour_info = intersection_contours_info[contour_idx];
+
+		// Collect loop vertices for this contour.
+		std::unordered_set<uint> loop_vids;
+		for (const uint lp_pair_idx : contour_info.loop_pairs)
 		{
 			if (lp_pair_idx >= num_pairs)
 				continue;
-			const auto edge = ef_list[lp_pair_idx].get_edge();
+			const uint2 edge = ef_list[lp_pair_idx].get_edge();
 			if (edge.x == edge.y && edge.x < num_verts)
-				contour_loop_vertex_ids[c].emplace(edge.x);
+				loop_vids.insert(edge.x);
 		}
-	}
 
-	{
-		for (uint contour_idx = 0; contour_idx < num_contours; contour_idx++)
+		// Count real EF crossings per edge and collect pierced / incident faces per mesh side.
+		touched_edges.clear();
+		std::array<std::set<uint>, 2> pierced_face_sets;
+		for (const uint pair_idx : contour)
 		{
-			const auto& contour = intersection_contours[contour_idx];
-			const auto& contour_info = intersection_contours_info[contour_idx];
-
-			if (!contour_type_can_flood_fill(contour_info.contour_type)
-				&& !contour_type_can_partial_flood_fill(contour_info.contour_type))
-			{
+			if (ef_list[pair_idx].get_is_loop_vertex())
 				continue;
-			}
+			const uint eid = ef_indices[pair_idx].x;
+			const uint fid = ef_indices[pair_idx].y;
+			const uint m_e = ef_pair_mesh_idx[pair_idx];
+			const uint m_f = m_e ^ 1u;
 
-			const auto& loop_vids = contour_loop_vertex_ids[contour_idx];
+			if (edge_cross_cnt[eid] == 0u)
+				touched_edges.push_back(eid);
+			edge_cross_cnt[eid]++;
 
-			for (uint i = 0; i < contour.size(); i++)
+			if (fid < num_faces)
+				pierced_face_sets[m_f].insert(fid);
+			for (const uint adj_fid : host_mesh_data->edge_adj_faces_ext[eid])
 			{
-				const uint	pair_idx = contour[i];
-				const uint	eid = ef_pair_semented_indices[pair_idx].x;
-				const uint	v0_region_idx = ef_pair_region_idx[pair_idx];
-				const uint	v1_region_idx = v0_region_idx ^ 1;
-				const uint2 edge = extended_edges[eid];
-
-				if (edge[0] == edge[1])
-					continue;
-
-				if (edge[0] < num_verts && !loop_vids.count(edge[0]))
-					region_contains_verts[v0_region_idx].emplace(edge[0]);
-				if (edge[1] < num_verts && !loop_vids.count(edge[1]))
-					region_contains_verts[v1_region_idx].emplace(edge[1]);
+				if (adj_fid < num_faces)
+					pierced_face_sets[m_e].insert(adj_fid);
 			}
 		}
-
-		region_contains_verts_1order = region_contains_verts;
-
-		constexpr uint k_open_side_extend_n = 2;
-
-		for (uint region_idx = 0; region_idx < num_regions; region_idx++)
+		for (uint m = 0u; m < 2u; ++m)
 		{
-			const uint	contour_idx = region_idx / 4;
-			const uint	mesh_idx_local = (region_idx % 4) / 2;
-			const auto& contour_info = intersection_contours_info[contour_idx];
-			const auto& loop_vids = contour_loop_vertex_ids[contour_idx];
-			const bool	is_closed_side = contour_info.mesh_is_closed[mesh_idx_local];
-			const uint	extend_n = is_closed_side ? std::numeric_limits<uint>::max() : k_open_side_extend_n;
+			gia_contour_pierced_faces[contour_idx][m].assign(
+				pierced_face_sets[m].begin(), pierced_face_sets[m].end());
+		}
 
-			std::vector<bool> edge_segmented(num_edges, false);
-			const auto&		  contour = intersection_contours[contour_idx];
-			for (const uint pair_idx : contour)
-			{
-				const uint eid = ef_indices[pair_idx].x;
-				edge_segmented[eid] = true;
-			}
+		// Collect 1-ring seeds per mesh side using only odd-crossing edges (even crossings cancel topologically).
+		std::array<std::array<std::set<uint>, 2>, 2> side_seeds;
+		for (const uint pair_idx : contour)
+		{
+			if (ef_list[pair_idx].get_is_loop_vertex())
+				continue;
+			const uint eid = ef_indices[pair_idx].x;
+			if ((edge_cross_cnt[eid] & 1u) == 0u)
+				continue;
 
-			std::vector<uint> to_visit;
-			to_visit.assign(region_contains_verts[region_idx].begin(), region_contains_verts[region_idx].end());
-			std::vector<uint> hops(num_verts, 0u);
-			std::vector<bool> visited(num_verts, false);
-			for (const uint vid : to_visit)
-			{
-				visited[vid] = true;
-				hops[vid] = 0;
-			}
-			for (const uint lvid : loop_vids)
-				visited[lvid] = true;
+			const uint	m_e = ef_pair_mesh_idx[pair_idx];
+			const uint	v0_parity = ef_pair_region_idx[pair_idx] & 1u;
+			const uint	v1_parity = v0_parity ^ 1u;
+			const uint2 edge = ef_list[pair_idx].get_edge();
 
-			size_t head = 0;
-			while (head < to_visit.size())
+			if (edge.x < num_verts && !loop_vids.count(edge.x))
+				side_seeds[m_e][v0_parity].insert(edge.x);
+			if (edge.y < num_verts && !loop_vids.count(edge.y))
+				side_seeds[m_e][v1_parity].insert(edge.y);
+		}
+		for (uint m = 0u; m < 2u; ++m)
+		{
+			for (uint s = 0u; s < 2u; ++s)
+				region_contains_verts_1order[4u * contour_idx + 2u * m + s] = side_seeds[m][s];
+		}
+
+		// Dual-BFS with leak detection for each mesh side.
+		std::array<bool, 2> side_closed = { false, false };
+		for (uint m = 0u; m < 2u; ++m)
+		{
+			const auto& s0 = side_seeds[m][0];
+			const auto& s1 = side_seeds[m][1];
+			// A closed separating wall must have non-empty seeds on BOTH sides; otherwise Dual-BFS
+			// cannot detect a leak and would flood the entire valid mesh into a single region.
+			if (s0.empty() || s1.empty())
+				continue;
+
+			bool seed_conflict = false;
+			for (const uint v : s0)
 			{
-				const uint vid = to_visit[head++];
-				if (hops[vid] >= extend_n)
-					continue;
-				const auto& adj_edges = host_mesh_data->vert_adj_edges[vid];
-				for (uint ii = 0; ii < adj_edges.size(); ii++)
+				if (s1.count(v))
 				{
-					const uint eid = adj_edges[ii];
-					if (edge_segmented[eid])
+					seed_conflict = true;
+					break;
+				}
+			}
+			if (seed_conflict)
+				continue;
+
+			bfs_touched_verts.clear();
+			std::array<std::queue<uint>, 2> queues;
+			std::array<float, 2>			areas = { 0.0f, 0.0f };
+			for (const uint v : s0)
+			{
+				bfs_owner[v] = 0;
+				bfs_touched_verts.push_back(v);
+				queues[0].push(v);
+				areas[0] += host_mesh_data->sa_rest_vert_area[v];
+			}
+			for (const uint v : s1)
+			{
+				bfs_owner[v] = 1;
+				bfs_touched_verts.push_back(v);
+				queues[1].push(v);
+				areas[1] += host_mesh_data->sa_rest_vert_area[v];
+			}
+
+			bool leaked = false;
+			while ((!queues[0].empty() || !queues[1].empty()) && !leaked)
+			{
+				const uint side = (!queues[0].empty() && (queues[1].empty() || areas[0] <= areas[1])) ? 0u : 1u;
+				const uint v = queues[side].front();
+				queues[side].pop();
+
+				const auto& adj_edges = host_mesh_data->vert_adj_edges[v];
+				for (const uint eid : adj_edges)
+				{
+					// Odd-crossing contour edges form the flood-fill wall.
+					if ((edge_cross_cnt[eid] & 1u) != 0u)
 						continue;
-					const auto& edge = host_mesh_data->sa_edges[eid];
-					const uint	nid = edge.x == vid ? edge.y : edge.x;
-					if (!visited[nid])
+					const uint2 edge = host_mesh_data->sa_edges[eid];
+					const uint	nb = (edge.x == v) ? edge.y : edge.x;
+					if (loop_vids.count(nb))
+						continue;
+					if (bfs_owner[nb] == -1)
 					{
-						visited[nid] = true;
-						hops[nid] = hops[vid] + 1;
-						to_visit.push_back(nid);
-						region_contains_verts[region_idx].emplace(nid);
+						bfs_owner[nb] = static_cast<int>(side);
+						bfs_touched_verts.push_back(nb);
+						queues[side].push(nb);
+						areas[side] += host_mesh_data->sa_rest_vert_area[nb];
+					}
+					else if (bfs_owner[nb] != static_cast<int>(side))
+					{
+						leaked = true;
+						break;
 					}
 				}
 			}
-		}
 
-		for (uint c = 0; c < num_contours; ++c)
-		{
-			const auto& loop_vids = contour_loop_vertex_ids[c];
-			if (loop_vids.empty())
-				continue;
-			for (uint r = 4 * c; r < 4 * c + 4; ++r)
-				for (const uint lvid : loop_vids)
-					region_contains_verts[r].erase(lvid);
-		}
-	}
-
-	for (uint region_idx = 0; region_idx < num_regions; region_idx++)
-	{
-		const auto& region_verts = region_contains_verts[region_idx];
-		for (const uint vid : region_verts)
-		{
-			const auto& adj_faces = host_mesh_data->vert_adj_faces[vid];
-			for (uint ii = 0; ii < adj_faces.size(); ii++)
+			if (!leaked)
 			{
-				(void)adj_faces[ii];
+				side_closed[m] = true;
+				const uint r0 = 4u * contour_idx + 2u * m + 0u;
+				const uint r1 = 4u * contour_idx + 2u * m + 1u;
+				for (const uint v : bfs_touched_verts)
+				{
+					if (bfs_owner[v] == 0)
+						region_contains_verts[r0].insert(v);
+					else if (bfs_owner[v] == 1)
+						region_contains_verts[r1].insert(v);
+				}
+				region_rest_area[r0] = areas[0];
+				region_rest_area[r1] = areas[1];
 			}
-		}
-	}
 
-	std::vector<uint2> contour_invalid_region_pair(num_contours, luisa::make_uint2(-1u));
-	for (uint contour_idx = 0; contour_idx < num_contours; contour_idx++)
-	{
-		uint2		invalid_regions = luisa::make_uint2(-1u, -1u);
-		const auto& contour_info = intersection_contours_info[contour_idx];
-
-		if (!contour_type_can_flood_fill(contour_info.contour_type)
-			&& !contour_type_can_partial_flood_fill(contour_info.contour_type))
-		{
-			contour_invalid_region_pair[contour_idx] = invalid_regions;
-			continue;
+			for (const uint v : bfs_touched_verts)
+				bfs_owner[v] = -1;
 		}
 
-		const uint r00 = 4 * contour_idx + 0;
-		const uint r01 = 4 * contour_idx + 1;
-		const uint r10 = 4 * contour_idx + 2;
-		const uint r11 = 4 * contour_idx + 3;
-		auto	   region_pick_size = [&](const uint region_idx, const uint mesh_idx) -> uint
-		{
-			if (contour_info.contour_type == ContourType::BBII && contour_info.mesh_is_closed[mesh_idx])
-				return region_contains_verts_1order[region_idx].size();
-			return region_contains_verts[region_idx].size();
-		};
-		const uint n00 = region_pick_size(r00, 0u);
-		const uint n01 = region_pick_size(r01, 0u);
-		const uint n10 = region_pick_size(r10, 1u);
-		const uint n11 = region_pick_size(r11, 1u);
+		// Reset edge crossing counts for next contour.
+		for (const uint eid : touched_edges)
+			edge_cross_cnt[eid] = 0u;
 
-		auto pick_smaller = [](uint ra, uint na, uint rb, uint nb) -> uint
+		// Select invalid region(s) for this contour.
+		auto pick_smaller_region = [&](const uint ra, const uint rb) -> uint
 		{
-			if (na == 0 && nb == 0)
+			const uint na = static_cast<uint>(region_contains_verts[ra].size());
+			const uint nb = static_cast<uint>(region_contains_verts[rb].size());
+			if (na == 0u || nb == 0u)
 				return -1u;
-			if (na == 0)
-				return rb;
-			if (nb == 0)
-				return ra;
+			const float aa = region_rest_area[ra];
+			const float ab = region_rest_area[rb];
+			if (std::abs(aa - ab) > 1e-7f * std::max(aa, ab))
+				return (aa < ab) ? ra : rb;
 			return (na <= nb) ? ra : rb;
 		};
 
-		invalid_regions[0] = pick_smaller(r00, n00, r01, n01);
-		invalid_regions[1] = pick_smaller(r10, n10, r11, n11);
+		uint2 invalid_regions = luisa::make_uint2(-1u, -1u);
+		const uint r00 = 4u * contour_idx + 0u;
+		const uint r01 = 4u * contour_idx + 1u;
+		const uint r10 = 4u * contour_idx + 2u;
+		const uint r11 = 4u * contour_idx + 3u;
 
-		LUISA_INFO("Contour {} [{}] (mesh_closed=[{},{}]): Invalid region pair {}, NumVerts = {} - {} (Compared to {} = {})",
+		if (side_closed[0] && side_closed[1])
+		{
+			// On a single-sheet self-intersection (e.g. Eight, LL), m=0 and m=1 share one common connecting region.
+			// Identify it so we pick the two disjoint penetrating flaps/caps instead of tagging the shared region.
+			auto sets_overlap = [](const std::set<uint>& a, const std::set<uint>& b) -> bool
+			{
+				auto it_a = a.begin();
+				auto it_b = b.begin();
+				while (it_a != a.end() && it_b != b.end())
+				{
+					if (*it_a == *it_b)
+						return true;
+					if (*it_a < *it_b)
+						++it_a;
+					else
+						++it_b;
+				}
+				return false;
+			};
+
+			int common_i0 = -1;
+			int common_i1 = -1;
+			for (uint i0 = 0u; i0 < 2u && common_i0 < 0; ++i0)
+			{
+				for (uint i1 = 0u; i1 < 2u; ++i1)
+				{
+					if (sets_overlap(region_contains_verts[4u * contour_idx + i0],
+							region_contains_verts[4u * contour_idx + 2u + i1]))
+					{
+						common_i0 = static_cast<int>(i0);
+						common_i1 = static_cast<int>(i1);
+						break;
+					}
+				}
+			}
+
+			if (common_i0 >= 0)
+			{
+				const uint r_comm = 4u * contour_idx + static_cast<uint>(common_i0);
+				const uint r0_excl = 4u * contour_idx + static_cast<uint>(common_i0 ^ 1);
+				const uint r1_excl = 4u * contour_idx + 2u + static_cast<uint>(common_i1 ^ 1);
+				const float a_comm = region_rest_area[r_comm];
+				const float a0 = region_rest_area[r0_excl];
+				const float a1 = region_rest_area[r1_excl];
+				if (a_comm < std::min(a0, a1) && a_comm < 0.25f * (a0 + a1))
+				{
+					invalid_regions[0] = r_comm;
+					invalid_regions[1] = -1u;
+				}
+				else
+				{
+					invalid_regions[0] = region_contains_verts[r0_excl].empty() ? -1u : r0_excl;
+					invalid_regions[1] = region_contains_verts[r1_excl].empty() ? -1u : r1_excl;
+				}
+			}
+			else
+			{
+				invalid_regions[0] = pick_smaller_region(r00, r01);
+				invalid_regions[1] = pick_smaller_region(r10, r11);
+			}
+		}
+		else if (side_closed[0])
+		{
+			invalid_regions[0] = pick_smaller_region(r00, r01);
+		}
+		else if (side_closed[1])
+		{
+			invalid_regions[1] = pick_smaller_region(r10, r11);
+		}
+
+		gia_invalid_region_pair[contour_idx] = invalid_regions;
+
+		LUISA_INFO("Contour {} [{}] (flood_closed=[{},{}]): Invalid region pair {}, NumVerts = {} - {} (Compared to {} = {})",
 			contour_idx,
 			contour_type_to_string(contour_info.contour_type),
-			contour_info.mesh_is_closed[0],
-			contour_info.mesh_is_closed[1],
+			side_closed[0],
+			side_closed[1],
 			invalid_regions,
 			invalid_regions[0] != -1u ? region_contains_verts[invalid_regions[0]].size() : 0u,
 			invalid_regions[1] != -1u ? region_contains_verts[invalid_regions[1]].size() : 0u,
-			invalid_regions[0] != -1u ? region_contains_verts[invalid_regions[0] ^ 1].size() : 0u,
-			invalid_regions[1] != -1u ? region_contains_verts[invalid_regions[1] ^ 1].size() : 0u);
-		contour_invalid_region_pair[contour_idx] = invalid_regions;
+			invalid_regions[0] != -1u ? region_contains_verts[invalid_regions[0] ^ 1u].size() : 0u,
+			invalid_regions[1] != -1u ? region_contains_verts[invalid_regions[1] ^ 1u].size() : 0u);
 	}
 
+	// Build vertex / edge / face region CSR tags for proximity culling.
 	std::vector<std::vector<uint>> vert_region_indices(num_verts);
 	std::vector<std::vector<uint>> edge_region_indices(num_edges);
 	std::vector<std::vector<uint>> face_region_indices(num_faces);
-	auto						   add_region_to_vertex_tags = [&](const uint region_idx, const uint tag, const bool use_seed_region)
+
+	for (uint contour_idx = 0u; contour_idx < num_contours; ++contour_idx)
 	{
-		if (region_idx == -1u || region_idx >= region_contains_verts.size())
-			return;
-		const auto& verts = use_seed_region ? region_contains_verts_1order[region_idx] : region_contains_verts[region_idx];
-		for (const uint vid : verts)
-			vert_region_indices[vid].push_back(tag);
-	};
-	for (uint contour_idx = 0; contour_idx < num_contours; contour_idx++)
-	{
-		const auto& contour_info = intersection_contours_info[contour_idx];
-		if (contour_type_can_flood_fill(contour_info.contour_type)
-			|| contour_type_can_partial_flood_fill(contour_info.contour_type))
+		const uint2 invalid_regions = gia_invalid_region_pair[contour_idx];
+
+		for (uint mesh_idx = 0u; mesh_idx < 2u; ++mesh_idx)
 		{
-			const uint2 invalid_regions = contour_invalid_region_pair[contour_idx];
-			for (uint mesh_idx = 0; mesh_idx < 2; mesh_idx++)
+			const uint tag = 2u * contour_idx + mesh_idx;
+			const uint invalid_region = invalid_regions[mesh_idx];
+			if (invalid_region != -1u && invalid_region < region_contains_verts.size())
 			{
-				const uint invalid_region = invalid_regions[mesh_idx];
-				if (invalid_region == -1u)
-					continue;
-
-				const uint tag = 2 * contour_idx + mesh_idx;
-				const bool use_seed_region = contour_info.contour_type == ContourType::BBII && contour_info.mesh_is_closed[mesh_idx];
-				add_region_to_vertex_tags(invalid_region, tag, use_seed_region);
-
-				const uint mesh_region_base = 4 * contour_idx + 2 * mesh_idx;
-				const bool invalid_region_on_this_side = invalid_region == mesh_region_base || invalid_region == mesh_region_base + 1u;
-				if (!contour_info.mesh_is_closed[mesh_idx] && invalid_region_on_this_side)
-					add_region_to_vertex_tags(invalid_region ^ 1u, tag, false);
+				for (const uint vid : region_contains_verts[invalid_region])
+					vert_region_indices[vid].push_back(tag);
+			}
+			// Always tag pierced faces directly so single-sided penetrations (0 vertices on opposite side) still disable opposing repulsion.
+			for (const uint fid : gia_contour_pierced_faces[contour_idx][mesh_idx])
+			{
+				if (fid < num_faces)
+					face_region_indices[fid].push_back(tag);
 			}
 		}
+
+		// Disable conflicting self-collision repulsion directly across contour EF pairs on all contours
+		// (matching PRP's contour-rim culling so valid-side 1-ring repulsion cannot lock invalid regions in place).
+		for (const uint pair_idx : intersection_contours[contour_idx])
+		{
+			if (ef_list[pair_idx].get_is_loop_vertex())
+				continue;
+			const uint	m_e = ef_pair_mesh_idx[pair_idx];
+			const uint	tag_e = 2u * contour_idx + m_e;
+			const uint	tag_f = 2u * contour_idx + (m_e ^ 1u);
+			const uint2 edge = ef_list[pair_idx].get_edge();
+			const uint3 face = ef_list[pair_idx].get_face();
+			vert_region_indices[edge.x].push_back(tag_e);
+			vert_region_indices[edge.y].push_back(tag_e);
+			vert_region_indices[face.x].push_back(tag_f);
+			vert_region_indices[face.y].push_back(tag_f);
+			vert_region_indices[face.z].push_back(tag_f);
+		}
 	}
 
+	auto sort_unique = [](std::vector<uint>& vec)
+	{
+		std::sort(vec.begin(), vec.end());
+		vec.erase(std::unique(vec.begin(), vec.end()), vec.end());
+	};
 	for (auto& tags : vert_region_indices)
+		sort_unique(tags);
+
+	for (uint fid = 0u; fid < num_faces; ++fid)
 	{
-		std::sort(tags.begin(), tags.end());
-		tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
-	}
-	for (uint fid = 0; fid < num_faces; fid++)
-	{
-		const uint3	   face = host_mesh_data->sa_faces[fid];
-		std::set<uint> face_regions;
-		for (uint ii = 0; ii < 3; ii++)
+		const uint3 face = host_mesh_data->sa_faces[fid];
+		auto&		vec = face_region_indices[fid];
+		for (uint ii = 0u; ii < 3u; ++ii)
 		{
-			const uint	vid = face[ii];
-			const auto& vert_regions = vert_region_indices[vid];
-			face_regions.insert(vert_regions.begin(), vert_regions.end());
+			const auto& vtags = vert_region_indices[face[ii]];
+			vec.insert(vec.end(), vtags.begin(), vtags.end());
 		}
-		auto& vec = face_region_indices[fid];
-		vec.assign(face_regions.begin(), face_regions.end());
+		sort_unique(vec);
 	}
-	for (uint eid = 0; eid < num_edges; eid++)
+	for (uint eid = 0u; eid < num_edges; ++eid)
 	{
-		const uint2	   edge = host_mesh_data->sa_edges[eid];
-		std::set<uint> edge_regions;
-		for (uint ii = 0; ii < 2; ii++)
+		const uint2 edge = host_mesh_data->sa_edges[eid];
+		auto&		vec = edge_region_indices[eid];
+		for (uint ii = 0u; ii < 2u; ++ii)
 		{
-			const uint	vid = edge[ii];
-			const auto& vert_regions = vert_region_indices[vid];
-			edge_regions.insert(vert_regions.begin(), vert_regions.end());
+			const auto& vtags = vert_region_indices[edge[ii]];
+			vec.insert(vec.end(), vtags.begin(), vtags.end());
 		}
-		auto& vec = edge_region_indices[eid];
-		vec.assign(edge_regions.begin(), edge_regions.end());
+		sort_unique(vec);
 	}
+
 	Initializer::upload_2d_csr_from(host_untangling_data->vert_region_indices_csr, vert_region_indices);
 	Initializer::upload_2d_csr_from(host_untangling_data->edge_region_indices_csr, edge_region_indices);
 	Initializer::upload_2d_csr_from(host_untangling_data->face_region_indices_csr, face_region_indices);
@@ -2269,9 +2343,12 @@ void IntersectionResolver::host_clear(Device& device, Stream& stream)
 	host_untangling_data->intersection_contours.clear();
 	host_untangling_data->intersection_contours_info.clear();
 	host_untangling_data->target_point_template_pairs.clear();
+	host_untangling_data->target_point_template_pairs_indices.clear();
 	host_untangling_data->vert_region_indices_csr.clear();
 	host_untangling_data->edge_region_indices_csr.clear();
 	host_untangling_data->face_region_indices_csr.clear();
+	gia_invalid_region_pair.clear();
+	gia_contour_pierced_faces.clear();
 }
 
 void IntersectionResolver::host_resolve(Device& device, Stream& stream)

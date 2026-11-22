@@ -92,9 +92,13 @@ namespace lcs
 		LbvhData<luisa::compute::Buffer>*		lbvh_data_edge = nullptr;
 
 		// GIA host-side working state (populated per step in GIA mode)
-		float									gia_cached_avg_edge_len = 0.0f;
-		uint									gia_cached_num_edges = 0u;
-		float									gia_last_perturb_eps = 0.0f;
+		float												 gia_cached_avg_edge_len = 0.0f;
+		uint												 gia_cached_num_edges = 0u;
+		float												 gia_last_perturb_eps = 0.0f;
+		std::vector<int>									 gia_face_orient;
+		std::vector<float3>									 gia_face_normals;
+		std::vector<uint2>									 gia_invalid_region_pair;
+		std::vector<std::array<std::vector<uint>, 2>>		 gia_contour_pierced_faces;
 
 	public:
 		void set_collision_data(CollisionData<luisa::compute::Buffer>* collision_data,
