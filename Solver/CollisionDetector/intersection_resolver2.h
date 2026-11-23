@@ -113,6 +113,10 @@ namespace lcs
 		std::vector<uint4>								  target_point_template_pairs_indices;
 		std::vector<std::set<uint>>						  region_contains_verts;
 		std::vector<std::set<uint>>						  region_contains_verts_1order;
+		bool											  gia_has_active_ef_response = false;
+		std::vector<float3>								  gia_face_normals;
+		std::vector<uint2>								  gia_invalid_region_pair;
+		std::vector<std::array<std::vector<uint>, 2>>	  gia_contour_pierced_faces;
 		BufferType<float4>								  ef_pair_pos_2D;
 		BufferType<float3>								  ef_pair_pos_3D;
 		std::vector<uint2>								  loop_pairs_vertex;

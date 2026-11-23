@@ -101,7 +101,7 @@ namespace lcs // Intersection Detection
 				const BufferVar<float>			 d_hat,
 				const BufferVar<float>			 thickness,
 				const Uint						 max_pairs,
-				const Float						 perturb_eps)
+				const Uint						 use_watertight_plucker)
 			{
 				const Uint pair_idx = dispatch_id().x;
 
@@ -147,24 +147,7 @@ namespace lcs // Intersection Detection
 					sa_x.read(face.z),
 				};
 
-				auto hash_coord = [](const Uint& vid, const uint seed) -> Float
-				{
-					Uint x = (vid ^ seed) * 0x27d4eb2du;
-					x = x ^ (x >> 15u);
-					x = x * 0x85ebca6bu;
-					x = x ^ (x >> 13u);
-					const Float sgn = ite((x & 1u) != 0u, 1.0f, -1.0f);
-					const Float mag = 0.35f + 0.65f * (cast<float>(x >> 1u) * (1.0f / 2147483647.0f));
-					return sgn * mag;
-				};
-				auto perturb_pos = [&](const Float3& p, const Uint& vid) -> Float3
-				{
-					return p + make_float3(
-						hash_coord(vid, 0x9e3779b9u),
-						hash_coord(vid, 0x7f4a7c15u),
-						hash_coord(vid, 0x6a09e667u)) * perturb_eps;
-				};
-				auto watertight_ef_query = [](const Float3& p0,
+				auto watertight_ef_query = [](const Float3&	 p0,
 											   const Float3& p1,
 											   const Uint	 va,
 											   const Uint	 vb,
@@ -235,14 +218,9 @@ namespace lcs // Intersection Detection
 				Float  out_time = 0.0f;
 				Bool   intersect = false;
 
-				$if(perturb_eps > 0.0f)
+				$if(use_watertight_plucker != 0u)
 				{
-					const Float3 e0_p = perturb_pos(e0, edge.x);
-					const Float3 e1_p = perturb_pos(e1, edge.y);
-					const Float3 a_p = perturb_pos(ABC[0], face.x);
-					const Float3 b_p = perturb_pos(ABC[1], face.y);
-					const Float3 c_p = perturb_pos(ABC[2], face.z);
-					intersect = watertight_ef_query(e0_p, e1_p, face.x, face.y, face.z, a_p, b_p, c_p, face_bary, out_time);
+					intersect = watertight_ef_query(e0, e1, face.x, face.y, face.z, ABC[0], ABC[1], ABC[2], face_bary, out_time);
 				}
 				$else
 				{
@@ -481,26 +459,7 @@ namespace lcs // Intersection Detection
 		const uint	num_broadphase_vf = host_count[host_collision_data->get_vf_count_offset()];
 		const uint	num_broadphase_ee = host_count[host_collision_data->get_ee_count_offset()];
 		const uint	num_broadphase_ef = host_count[host_collision_data->get_ef_count_offset()];
-
-		// Compute deterministic symbolic-perturbation epsilon for GIA mode (0 for PRP/ICM to preserve exact baseline behavior).
-		float perturb_eps = 0.0f;
-		if (get_scene_params().use_untangling_GIA)
-		{
-			if (host_mesh_data != nullptr && host_mesh_data->num_edges > 0u
-				&& (gia_cached_num_edges != host_mesh_data->num_edges || gia_cached_avg_edge_len <= 0.0f))
-			{
-				double sum_len = 0.0;
-				for (uint eid = 0u; eid < host_mesh_data->num_edges; ++eid)
-				{
-					const uint2 e = host_mesh_data->sa_edges[eid];
-					sum_len += static_cast<double>(luisa::length(host_mesh_data->sa_rest_x[e.y] - host_mesh_data->sa_rest_x[e.x]));
-				}
-				gia_cached_avg_edge_len = static_cast<float>(sum_len / static_cast<double>(host_mesh_data->num_edges));
-				gia_cached_num_edges = host_mesh_data->num_edges;
-			}
-			perturb_eps = std::clamp(2e-4f * gia_cached_avg_edge_len, 1e-5f, 1e-4f);
-		}
-		gia_last_perturb_eps = perturb_eps;
+		const uint	use_watertight_plucker = get_scene_params().use_untangling_GIA ? 1u : 0u;
 
 		// host_mesh_data->face_adj_edges
 		stream << fn_reset_uint(device_collision_data->vert_is_invalid)
@@ -521,7 +480,7 @@ namespace lcs // Intersection Detection
 			d_hat,
 			thickness,
 			get_collision_data().narrow_phase_list_ef.size(),
-			perturb_eps)
+			use_watertight_plucker)
 					  .dispatch(num_broadphase_ef);
 
 		if (!get_scene_params().ignore_near_zero_dist_pairs)
@@ -883,7 +842,7 @@ namespace lcs // Contour preprocessing
 				// P0b: order-INSENSITIVE canonical multiset hash of key+payload bytes.
 				struct KeyedPair
 				{
-					uint2								   indices;
+					uint2													 indices;
 					std::array<unsigned char, sizeof(CollisionPair::EfPair)> payload;
 				};
 				std::vector<KeyedPair> keyed(num_pairs);
@@ -1217,27 +1176,6 @@ CpuParallel::parallel_for(0,
 host_untangling_data->ef_pair_length = ef_pair_length;
 }
 
-	float gia_host_hash_coord(const uint vid, const uint seed) noexcept
-	{
-		uint x = (vid ^ seed) * 0x27d4eb2du;
-		x = x ^ (x >> 15u);
-		x = x * 0x85ebca6bu;
-		x = x ^ (x >> 13u);
-		const float sgn = ((x & 1u) != 0u) ? 1.0f : -1.0f;
-		const float mag = 0.35f + 0.65f * (static_cast<float>(x >> 1u) * (1.0f / 2147483647.0f));
-		return sgn * mag;
-	}
-
-	float3 gia_host_perturb_pos(const float3& p, const uint vid, const float eps) noexcept
-	{
-		if (eps <= 0.0f)
-			return p;
-		return p + luisa::make_float3(
-			gia_host_hash_coord(vid, 0x9e3779b9u),
-			gia_host_hash_coord(vid, 0x7f4a7c15u),
-			gia_host_hash_coord(vid, 0x6a09e667u)) * eps;
-	}
-
 ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj_pairs,
 	const std::vector<luisa::ubyte>&									pair_is_boundary,
 	const std::vector<uint>&											ef_pair_mesh_index,
@@ -1253,7 +1191,6 @@ ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj
 	std::vector<uint>		  contour_boundary_pairs;
 	std::vector<uint>		  contour_loop_pairs;
 	std::vector<luisa::ubyte> contour_loop_pairs_is_boundary;
-	bool					  is_closed = !contour.empty();
 
 	for (const uint pair_idx : intersection_contours[contour_idx])
 	{
@@ -1266,11 +1203,6 @@ ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj
 		if (pair_is_boundary[pair_idx] != 0)
 		{
 			contour_boundary_pairs.push_back(pair_idx);
-			is_closed = false;
-		}
-		else if (pair_adj_pairs[pair_idx].size() < 2u)
-		{
-			is_closed = false;
 		}
 	}
 
@@ -1278,21 +1210,14 @@ ContourInfo identify_contour_type(const std::vector<std::vector<uint>>& pair_adj
 
 	if (contour_boundary_pairs.empty())
 	{
-		if (is_closed)
-		{
-			if (contour_loop_pairs.empty())
-				contour_type = ContourType::Closed;
-			else if (contour_loop_pairs.size() == 1)
-				contour_type = ContourType::Eight;
-			else if (contour_loop_pairs.size() == 2)
-				contour_type = ContourType::LL;
-			else
-				contour_type = ContourType::Undifined;
-		}
+		if (contour_loop_pairs.empty())
+			contour_type = ContourType::Closed;
+		else if (contour_loop_pairs.size() == 1)
+			contour_type = ContourType::Eight;
+		else if (contour_loop_pairs.size() == 2)
+			contour_type = ContourType::LL;
 		else
-		{
 			contour_type = ContourType::Undifined;
-		}
 	}
 	else
 	{
@@ -1434,7 +1359,7 @@ void IntersectionResolver::host_identify_region(Device& device, Stream& stream)
 	const auto& sa_x = host_sim_data->sa_x;
 
 	// 1. Propagate globally consistent face winding orientation across edge-adjacent manifold faces.
-	gia_face_orient.assign(num_faces, 0);
+	std::vector<int> face_orient(num_faces, 0);
 	auto has_directed_edge = [](const uint3& f, const uint u, const uint v) noexcept -> bool
 	{
 		return (f.x == u && f.y == v) || (f.y == u && f.z == v) || (f.z == u && f.x == v);
@@ -1442,13 +1367,13 @@ void IntersectionResolver::host_identify_region(Device& device, Stream& stream)
 	std::queue<uint> face_queue;
 	for (uint f0 = 0u; f0 < num_faces; ++f0)
 	{
-		if (gia_face_orient[f0] != 0)
+		if (face_orient[f0] != 0)
 			continue;
-		gia_face_orient[f0] = 1;
+		face_orient[f0] = 1;
 		face_queue.push(f0);
 		while (!face_queue.empty())
 		{
-			const uint	cf = face_queue.front();
+			const uint cf = face_queue.front();
 			face_queue.pop();
 			const uint3 f = sa_faces[cf];
 			const uint3 f_edges = host_mesh_data->face_adj_edges[cf];
@@ -1462,18 +1387,19 @@ void IntersectionResolver::host_identify_region(Device& device, Stream& stream)
 				const bool	cf_has_xy = has_directed_edge(f, e.x, e.y);
 				for (const uint nf : adj_faces)
 				{
-					if (nf == cf || nf >= num_faces || gia_face_orient[nf] != 0)
+					if (nf == cf || nf >= num_faces || face_orient[nf] != 0)
 						continue;
 					const bool nf_has_xy = has_directed_edge(sa_faces[nf], e.x, e.y);
 					// Adjacent faces with consistent orientation traverse their shared edge in opposite directions.
-					gia_face_orient[nf] = (cf_has_xy == nf_has_xy) ? -gia_face_orient[cf] : gia_face_orient[cf];
+					face_orient[nf] = (cf_has_xy == nf_has_xy) ? -face_orient[cf] : face_orient[cf];
 					face_queue.push(nf);
 				}
 			}
 		}
 	}
 
-	// 2. Compute oriented unit face normals (on unperturbed coordinates for response, and perturbed for sign consistency).
+	// 2. Compute oriented unit face normals using consistent manifold winding.
+	auto& gia_face_normals = host_untangling_data->gia_face_normals;
 	gia_face_normals.resize(num_faces, luisa::make_float3(0.0f));
 	CpuParallel::parallel_for(0u,
 		num_faces,
@@ -1483,13 +1409,12 @@ void IntersectionResolver::host_identify_region(Device& device, Stream& stream)
 			const float3 n = luisa::cross(sa_x[f.y] - sa_x[f.x], sa_x[f.z] - sa_x[f.x]);
 			const float	 len = luisa::length(n);
 			gia_face_normals[fid] = len > 1e-12f
-				? static_cast<float>(gia_face_orient[fid]) * (n / len)
+				? static_cast<float>(face_orient[fid]) * (n / len)
 				: luisa::make_float3(0.0f);
 		});
 
 	// 3. Assign consistent side parity per EF pair using signed dot product against the consistently oriented pierced face normal.
 	std::vector<uint> ef_pair_region_idx(num_pairs, 0u);
-	const float		  eps = gia_last_perturb_eps;
 	CpuParallel::parallel_for(0u,
 		num_pairs,
 		[&](const uint pair_idx)
@@ -1501,19 +1426,9 @@ void IntersectionResolver::host_identify_region(Device& device, Stream& stream)
 			{
 				const uint2	 edge = ef_list[pair_idx].get_edge();
 				const uint	 fid = ef_indices[pair_idx].y;
-				const uint3	 face = sa_faces[fid];
-				const float3 e0_p = gia_host_perturb_pos(sa_x[edge.x], edge.x, eps);
-				const float3 e1_p = gia_host_perturb_pos(sa_x[edge.y], edge.y, eps);
-				const float3 a_p = gia_host_perturb_pos(sa_x[face.x], face.x, eps);
-				const float3 b_p = gia_host_perturb_pos(sa_x[face.y], face.y, eps);
-				const float3 c_p = gia_host_perturb_pos(sa_x[face.z], face.z, eps);
-				float3		 n_p = luisa::cross(b_p - a_p, c_p - a_p);
-				const float	 n_len = luisa::length(n_p);
-				const float3 n_orient = n_len > 1e-12f
-					? static_cast<float>(gia_face_orient[fid]) * (n_p / n_len)
-					: gia_face_normals[fid];
+				const float3 n_orient = gia_face_normals[fid];
 				// edge_dir == 0 => edge.x lies on the +n_orient side of the pierced face; edge.y on the -n_orient side.
-				const float signed_dot = luisa::dot(e0_p - e1_p, n_orient);
+				const float signed_dot = luisa::dot(sa_x[edge.x] - sa_x[edge.y], n_orient);
 				edge_dir = (signed_dot >= 0.0f) ? 0u : 1u;
 			}
 			ef_pair_region_idx[pair_idx] = 4u * contour_idx + 2u * mesh_idx + edge_dir;
@@ -1547,6 +1462,8 @@ void IntersectionResolver::host_flood_filling(Device& device, Stream& stream)
 	region_contains_verts_1order.clear();
 	region_contains_verts_1order.resize(num_regions);
 
+	auto& gia_invalid_region_pair = host_untangling_data->gia_invalid_region_pair;
+	auto& gia_contour_pierced_faces = host_untangling_data->gia_contour_pierced_faces;
 	gia_invalid_region_pair.assign(num_contours, luisa::make_uint2(-1u, -1u));
 	gia_contour_pierced_faces.assign(num_contours, {});
 
@@ -1739,78 +1656,17 @@ void IntersectionResolver::host_flood_filling(Device& device, Stream& stream)
 			return (na <= nb) ? ra : rb;
 		};
 
-		uint2 invalid_regions = luisa::make_uint2(-1u, -1u);
+		uint2	   invalid_regions = luisa::make_uint2(-1u, -1u);
 		const uint r00 = 4u * contour_idx + 0u;
 		const uint r01 = 4u * contour_idx + 1u;
 		const uint r10 = 4u * contour_idx + 2u;
 		const uint r11 = 4u * contour_idx + 3u;
 
-		if (side_closed[0] && side_closed[1])
-		{
-			// On a single-sheet self-intersection (e.g. Eight, LL), m=0 and m=1 share one common connecting region.
-			// Identify it so we pick the two disjoint penetrating flaps/caps instead of tagging the shared region.
-			auto sets_overlap = [](const std::set<uint>& a, const std::set<uint>& b) -> bool
-			{
-				auto it_a = a.begin();
-				auto it_b = b.begin();
-				while (it_a != a.end() && it_b != b.end())
-				{
-					if (*it_a == *it_b)
-						return true;
-					if (*it_a < *it_b)
-						++it_a;
-					else
-						++it_b;
-				}
-				return false;
-			};
-
-			int common_i0 = -1;
-			int common_i1 = -1;
-			for (uint i0 = 0u; i0 < 2u && common_i0 < 0; ++i0)
-			{
-				for (uint i1 = 0u; i1 < 2u; ++i1)
-				{
-					if (sets_overlap(region_contains_verts[4u * contour_idx + i0],
-							region_contains_verts[4u * contour_idx + 2u + i1]))
-					{
-						common_i0 = static_cast<int>(i0);
-						common_i1 = static_cast<int>(i1);
-						break;
-					}
-				}
-			}
-
-			if (common_i0 >= 0)
-			{
-				const uint r_comm = 4u * contour_idx + static_cast<uint>(common_i0);
-				const uint r0_excl = 4u * contour_idx + static_cast<uint>(common_i0 ^ 1);
-				const uint r1_excl = 4u * contour_idx + 2u + static_cast<uint>(common_i1 ^ 1);
-				const float a_comm = region_rest_area[r_comm];
-				const float a0 = region_rest_area[r0_excl];
-				const float a1 = region_rest_area[r1_excl];
-				if (a_comm < std::min(a0, a1) && a_comm < 0.25f * (a0 + a1))
-				{
-					invalid_regions[0] = r_comm;
-					invalid_regions[1] = -1u;
-				}
-				else
-				{
-					invalid_regions[0] = region_contains_verts[r0_excl].empty() ? -1u : r0_excl;
-					invalid_regions[1] = region_contains_verts[r1_excl].empty() ? -1u : r1_excl;
-				}
-			}
-			else
-			{
-				invalid_regions[0] = pick_smaller_region(r00, r01);
-				invalid_regions[1] = pick_smaller_region(r10, r11);
-			}
-		}
-		else if (side_closed[0])
+		if (side_closed[0])
 		{
 			invalid_regions[0] = pick_smaller_region(r00, r01);
 		}
-		else if (side_closed[1])
+		if (side_closed[1])
 		{
 			invalid_regions[1] = pick_smaller_region(r10, r11);
 		}
@@ -1853,24 +1709,6 @@ void IntersectionResolver::host_flood_filling(Device& device, Stream& stream)
 				if (fid < num_faces)
 					face_region_indices[fid].push_back(tag);
 			}
-		}
-
-		// Disable conflicting self-collision repulsion directly across contour EF pairs on all contours
-		// (matching PRP's contour-rim culling so valid-side 1-ring repulsion cannot lock invalid regions in place).
-		for (const uint pair_idx : intersection_contours[contour_idx])
-		{
-			if (ef_list[pair_idx].get_is_loop_vertex())
-				continue;
-			const uint	m_e = ef_pair_mesh_idx[pair_idx];
-			const uint	tag_e = 2u * contour_idx + m_e;
-			const uint	tag_f = 2u * contour_idx + (m_e ^ 1u);
-			const uint2 edge = ef_list[pair_idx].get_edge();
-			const uint3 face = ef_list[pair_idx].get_face();
-			vert_region_indices[edge.x].push_back(tag_e);
-			vert_region_indices[edge.y].push_back(tag_e);
-			vert_region_indices[face.x].push_back(tag_f);
-			vert_region_indices[face.y].push_back(tag_f);
-			vert_region_indices[face.z].push_back(tag_f);
 		}
 	}
 
@@ -2038,15 +1876,15 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 	const uint	num_faces = host_mesh_data->num_faces;
 	const float depth_threshold = get_scene_params().untangling_response_depth;
 	// Match stiffness_untangling (same scale as stiffness_collision) so attraction is never overpowered by proximity repulsion.
-	const float response_stiffness = get_scene_params().stiffness_untangling;
-	// Cap per-step displacement relative to mesh edge length so CCD-free steps cannot overshoot and fold the cloth.
-	const float safe_step_cap = std::min(
-		depth_threshold,
-		std::max(0.02f, (gia_cached_avg_edge_len > 0.0f ? 1.5f * gia_cached_avg_edge_len : 0.05f)));
+	const float		response_stiffness = get_scene_params().stiffness_untangling;
 	constexpr float response_area_floor = 3e-6f;
 	constexpr float response_margin = 3e-3f;
 
 	// Reset EF pair responses; only double-open contours populate active EF responses.
+	auto&		gia_has_active_ef_response = host_untangling_data->gia_has_active_ef_response;
+	const auto& gia_face_normals = host_untangling_data->gia_face_normals;
+	const auto& gia_invalid_region_pair = host_untangling_data->gia_invalid_region_pair;
+	const auto& gia_contour_pierced_faces = host_untangling_data->gia_contour_pierced_faces;
 	gia_has_active_ef_response = false;
 	for (uint pair_idx = 0u; pair_idx < num_pairs; ++pair_idx)
 	{
@@ -2123,33 +1961,11 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 				// Parity 0 means vertex lies on +N_f side of opposite faces => valid side is -N_f.
 				const float valid_side_sign = ((invalid_region & 1u) == 0u) ? -1.0f : 1.0f;
 
-				// Compute area-weighted coherent pull normal over opposite target faces to prevent inward crumpling
-				// on faceted caps/pyramids (e.g. Closed, Eight, LL at high subdivision levels).
-				float3 coherent_normal_sum = luisa::make_float3(0.0f);
-				float  coherent_area_sum = 0.0f;
-				for (const uint fid : target_faces)
-				{
-					const float	 af = std::max(host_mesh_data->sa_rest_face_area[fid], 1e-8f);
-					const float3 nf = valid_side_sign * gia_face_normals[fid];
-					if (luisa::dot(nf, nf) > 1e-12f)
-					{
-						coherent_normal_sum += af * nf;
-						coherent_area_sum += af;
-					}
-				}
-				const float	 coherent_len = luisa::length(coherent_normal_sum);
-				const bool	 use_coherent_normal = (coherent_area_sum > 0.0f) && (coherent_len > 0.25f * coherent_area_sum);
-				const float3 coherent_normal = use_coherent_normal
-					? (coherent_normal_sum / coherent_len)
-					: luisa::make_float3(0.0f);
-
 				std::vector<CollisionPair::CollisionPairTemplate> local_pairs(src_verts.size());
 				std::vector<uint4>								  local_indices(src_verts.size());
 				std::vector<luisa::ubyte>						  local_valid(src_verts.size(), 0u);
 
-				CpuParallel::parallel_for(0u,
-					static_cast<uint>(src_verts.size()),
-					[&](const uint idx)
+				CpuParallel::parallel_for(0u, static_cast<uint>(src_verts.size()), [&](const uint idx)
 					{
 						const uint	 vid = src_verts[idx];
 						const float3 xv = sa_x[vid];
@@ -2190,44 +2006,36 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 						const float3 diff = best_q - xv;
 						const float	 dist = std::sqrt(best_dist_sq);
 
-						float3 n_pull = luisa::make_float3(0.0f);
-						float  pull_depth = 0.0f;
-						if (use_coherent_normal)
+						float3		 n_pull = luisa::make_float3(0.0f);
+						float		 pull_depth = 0.0f;
+						const float3 n_valid = valid_side_sign * gia_face_normals[best_fid];
+						const float	 n_valid_len = luisa::length(n_valid);
+						if (n_valid_len > 1e-6f)
 						{
-							n_pull = coherent_normal;
-							pull_depth = std::max(0.0f, luisa::dot(diff, coherent_normal));
-						}
-						else
-						{
-							const float3 n_valid = valid_side_sign * gia_face_normals[best_fid];
-							const float	 n_valid_len = luisa::length(n_valid);
-							if (n_valid_len > 1e-6f)
-							{
-								const float3 n_valid_unit = n_valid / n_valid_len;
-								const float	 signed_depth = luisa::dot(diff, n_valid_unit);
-								if (dist > 1e-6f && luisa::dot(diff / dist, n_valid_unit) > 0.25f)
-								{
-									n_pull = diff / dist;
-									pull_depth = dist;
-								}
-								else
-								{
-									n_pull = n_valid_unit;
-									pull_depth = std::max(0.0f, signed_depth);
-								}
-							}
-							else if (dist > 1e-6f)
+							const float3 n_valid_unit = n_valid / n_valid_len;
+							const float	 signed_depth = luisa::dot(diff, n_valid_unit);
+							if (dist > 1e-6f && luisa::dot(diff / dist, n_valid_unit) > 0.25f)
 							{
 								n_pull = diff / dist;
 								pull_depth = dist;
 							}
 							else
 							{
-								return;
+								n_pull = n_valid_unit;
+								pull_depth = std::max(0.0f, signed_depth);
 							}
 						}
+						else if (dist > 1e-6f)
+						{
+							n_pull = diff / dist;
+							pull_depth = dist;
+						}
+						else
+						{
+							return;
+						}
 
-						const float target_move = std::min(side_scale * (pull_depth + response_margin), safe_step_cap);
+						const float target_move = std::min(side_scale * (pull_depth + response_margin), depth_threshold);
 						const float C = -target_move;
 						const float area = std::max(
 							0.5f * (host_mesh_data->sa_rest_vert_area[vid] + host_mesh_data->sa_rest_face_area[best_fid]),
@@ -2243,9 +2051,7 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 						pair.make_vf_pair(luisa::make_uint4(vid, face.x, face.y, face.z), n_pull, k1, k2, area, best_bary);
 						local_pairs[idx] = pair;
 						local_indices[idx] = luisa::make_uint4(vid, best_fid, 2u * contour_idx + mesh_idx, 0u);
-						local_valid[idx] = 1u;
-					},
-					32);
+						local_valid[idx] = 1u; }, 32);
 
 				for (size_t idx = 0; idx < src_verts.size(); ++idx)
 				{
@@ -2259,21 +2065,18 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 		}
 		else if (get_scene_params().GIA_use_EF_response)
 		{
-			// Case B: Double-open contour (e.g. BIBI or leaked/open fallback) -> resolution-independent EF response.
-			uint  n_real_pairs = 0u;
-			float total_contour_len = 0.0f;
-			for (const uint pair_idx : contour)
-			{
-				if (ef_list[pair_idx].get_is_loop_vertex())
-					continue;
-				n_real_pairs++;
-				total_contour_len += host_untangling_data->ef_pair_length[pair_idx];
-			}
-			if (n_real_pairs == 0u)
-				continue;
-
+			// Case B: Double-open BIBI contour -> boundary-point separation (matching original GIA BIBI path).
 			if (contour_info.contour_type == ContourType::BIBI && contour_info.boundary_pairs.size() == 2u)
 			{
+				uint n_real_pairs = 0u;
+				for (const uint pair_idx : contour)
+				{
+					if (!ef_list[pair_idx].get_is_loop_vertex())
+						n_real_pairs++;
+				}
+				if (n_real_pairs == 0u)
+					continue;
+
 				uint boundary_pair_0 = contour_info.boundary_pairs[0];
 				uint boundary_pair_1 = contour_info.boundary_pairs[1];
 				if (ef_pair_mesh_index[boundary_pair_0] == 1u && ef_pair_mesh_index[boundary_pair_1] == 0u)
@@ -2287,7 +2090,7 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 					continue;
 
 				const float	 boundary_len = std::sqrt(boundary_len_sqr);
-				const float	 step_mag = std::min(safe_step_cap, boundary_len + response_margin);
+				const float	 step_mag = std::min(depth_threshold, boundary_len + response_margin);
 				const float3 contour_grad = (boundary_vector / boundary_len) * step_mag;
 				const float	 eff_area = std::max(boundary_len * boundary_len / static_cast<float>(n_real_pairs), response_area_floor);
 				const float	 stiff = eff_area * response_stiffness;
@@ -2302,89 +2105,6 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 					pair.set_stiffness(stiff);
 					// Unified convention: cgB += -stiff * w * grad => mesh 0 moves along +contour_grad, mesh 1 along -contour_grad.
 					pair.set_gradient(edge_on_mesh_0 ? -contour_grad : contour_grad);
-				}
-			}
-			else if (contour_info.contour_type == ContourType::BLI
-				&& contour_info.boundary_pairs.size() == 1u
-				&& contour_info.loop_pairs.size() == 1u)
-			{
-				// Resolution-independent BLI separation: pull boundary mesh endpoint P_B toward loop vertex P_L
-				// (direct geometric analogue of BIBI, avoiding 1/(E·N) grazing singularities in multi-pair ICM sums).
-				const uint	 boundary_pair = contour_info.boundary_pairs[0];
-				const uint	 loop_pair = contour_info.loop_pairs[0];
-				const uint	 boundary_mesh = ef_pair_mesh_index[boundary_pair];
-				const float3 boundary_point = get_pair_edge_point(boundary_pair);
-				const float3 loop_point = get_pair_edge_point(loop_pair);
-				const float3 sep_vec = loop_point - boundary_point;
-				const float	 sep_len_sqr = luisa::dot(sep_vec, sep_vec);
-				if (!(sep_len_sqr > 1e-12f) || !std::isfinite(sep_len_sqr))
-					continue;
-
-				const float	 sep_len = std::sqrt(sep_len_sqr);
-				const float	 step_mag = std::min(safe_step_cap, sep_len + response_margin);
-				const float3 contour_grad = (sep_vec / sep_len) * step_mag;
-				const float	 eff_area = std::max(sep_len * sep_len / static_cast<float>(n_real_pairs), response_area_floor);
-				const float	 stiff = eff_area * response_stiffness;
-
-				gia_has_active_ef_response = true;
-				for (const uint pair_idx : contour)
-				{
-					if (ef_list[pair_idx].get_is_loop_vertex())
-						continue;
-					auto&	   pair = ef_list[pair_idx];
-					const bool edge_on_boundary_mesh = (ef_pair_mesh_index[pair_idx] == boundary_mesh);
-					pair.set_stiffness(stiff);
-					// Move boundary_mesh along +(P_L - P_B) and opposite side along -(P_L - P_B).
-					pair.set_gradient(edge_on_boundary_mesh ? -contour_grad : contour_grad);
-				}
-			}
-			else
-			{
-				// General open / leaked contour fallback: accumulated ICM contour-length minimization gradient.
-				// Bound each pair's raw local gradient before summation so a single grazing pair (small E·N)
-				// cannot dominate and destabilize the contour direction.
-				constexpr uint ref_mesh_idx = 0u;
-				float3		   accum_grad = luisa::make_float3(0.0f);
-				for (const uint pair_idx : contour)
-				{
-					if (ef_list[pair_idx].get_is_loop_vertex())
-						continue;
-					const uint	 eid = ef_indices[pair_idx].x;
-					const uint	 fid = ef_indices[pair_idx].y;
-					const float3 raw_lg = compute_local_gradient(eid,
-						fid,
-						ef_list[pair_idx],
-						host_mesh_data->edge_adj_faces_ext,
-						host_mesh_data->sa_edges,
-						host_mesh_data->sa_faces,
-						sa_x);
-					const float	 raw_len_sq = luisa::dot(raw_lg, raw_lg);
-					if (!(raw_len_sq > 1e-12f) || !std::isfinite(raw_len_sq))
-						continue;
-					const float3 lg = raw_lg / std::sqrt(raw_len_sq + 1.0f);
-					const bool	 inverse = (ef_pair_mesh_index[pair_idx] != ref_mesh_idx);
-					accum_grad += inverse ? -lg : lg;
-				}
-				const float g_norm_sq = luisa::dot(accum_grad, accum_grad);
-				if (!(g_norm_sq > 1e-12f) || !std::isfinite(g_norm_sq))
-					continue;
-
-				const float	 char_len = std::max(total_contour_len, 1e-3f);
-				const float	 step_mag = std::min(safe_step_cap, 0.5f * char_len + response_margin);
-				const float3 contour_grad = (accum_grad / std::sqrt(g_norm_sq)) * step_mag;
-				const float	 eff_area = std::max(char_len * char_len / static_cast<float>(n_real_pairs), response_area_floor);
-				const float	 stiff = eff_area * response_stiffness;
-
-				gia_has_active_ef_response = true;
-				for (const uint pair_idx : contour)
-				{
-					if (ef_list[pair_idx].get_is_loop_vertex())
-						continue;
-					auto&	   pair = ef_list[pair_idx];
-					const bool inverse = (ef_pair_mesh_index[pair_idx] != ref_mesh_idx);
-					pair.set_stiffness(stiff);
-					// compute_local_gradient points in descent direction (+cgB), so negate for unified (-stiff * w * grad) convention.
-					pair.set_gradient(inverse ? contour_grad : -contour_grad);
 				}
 			}
 		}
@@ -2402,7 +2122,7 @@ void IntersectionResolver::host_resolve_GIA(Device& device, Stream& stream)
 void IntersectionResolver::host_assemble_ef_response(Stream& stream, std::vector<float3>& sa_cgB, std::vector<float3x3>& sa_cgA_diag)
 {
 	const bool has_ef_response = get_scene_params().use_untangling_ICM
-		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response);
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && host_untangling_data->gia_has_active_ef_response);
 	const uint num_pairs = host_collision_data->narrow_phase_collision_count[1];
 	if (!has_ef_response || num_pairs == 0u)
 		return;
@@ -2434,7 +2154,7 @@ void IntersectionResolver::host_assemble_ef_response(Stream& stream, std::vector
 void IntersectionResolver::device_assemble_ef_response(Stream& stream, Buffer<float3>& sa_cgB, Buffer<float3x3>& sa_cgA_diag)
 {
 	const bool has_ef_response = get_scene_params().use_untangling_ICM
-		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response);
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && host_untangling_data->gia_has_active_ef_response);
 	const uint num_pairs = host_collision_data->narrow_phase_collision_count[1];
 	if (!has_ef_response || num_pairs == 0u)
 		return;
@@ -2499,7 +2219,7 @@ void IntersectionResolver::host_spmv_ICM(Stream& stream, const std::vector<float
 void IntersectionResolver::host_spmv(Stream& stream, const std::vector<float3>& input_ptr, std::vector<float3>& output_ptr)
 {
 	if (get_scene_params().use_untangling_ICM
-		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response))
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && host_untangling_data->gia_has_active_ef_response))
 	{
 		host_spmv_ICM(stream, input_ptr, output_ptr);
 	}
@@ -2517,7 +2237,7 @@ void IntersectionResolver::device_spmv_ICM(Stream& stream, const Buffer<float3>&
 void IntersectionResolver::device_spmv(Stream& stream, const Buffer<float3>& input_ptr, Buffer<float3>& output_ptr)
 {
 	if (get_scene_params().use_untangling_ICM
-		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && gia_has_active_ef_response))
+		|| (get_scene_params().use_untangling_GIA && get_scene_params().GIA_use_EF_response && host_untangling_data->gia_has_active_ef_response))
 	{
 		device_spmv_ICM(stream, input_ptr, output_ptr);
 	}
@@ -2576,9 +2296,10 @@ void IntersectionResolver::host_clear(Device& device, Stream& stream)
 	host_untangling_data->vert_region_indices_csr.clear();
 	host_untangling_data->edge_region_indices_csr.clear();
 	host_untangling_data->face_region_indices_csr.clear();
-	gia_invalid_region_pair.clear();
-	gia_contour_pierced_faces.clear();
-	gia_has_active_ef_response = false;
+	host_untangling_data->gia_face_normals.clear();
+	host_untangling_data->gia_invalid_region_pair.clear();
+	host_untangling_data->gia_contour_pierced_faces.clear();
+	host_untangling_data->gia_has_active_ef_response = false;
 }
 
 void IntersectionResolver::host_resolve(Device& device, Stream& stream)
